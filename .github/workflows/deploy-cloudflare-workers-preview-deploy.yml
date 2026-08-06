@@ -134,6 +134,14 @@ jobs:
           node-version: lts/*
           cache: pnpm
 
+      # NOTICE:
+      # Wrangler Action installs Wrangler into the workspace when no executable is available.
+      # pnpm then rejects workerd's unapproved build script and aborts the deployment.
+      # Source: https://github.com/cloudflare/wrangler-action/issues/181#issuecomment-2127990708
+      # Remove this after Wrangler Action can install with pnpm without mutating the workspace.
+      - name: Install Wrangler
+        run: pnpm install --global wrangler@4
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
