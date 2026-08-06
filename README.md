@@ -1,6 +1,6 @@
 # pinia-plugin-synced
 
-An experimental Pinia plugin that synchronizes explicitly opted-in stores and actions across same-origin tabs. It uses `tab-election` to elect one authoritative Pinia, route actions to it, and replicate committed state to every participating tab.
+Synchronize selected Pinia stores and actions across same-origin tabs, windows, and iframes. One context is elected as the leader: actions run there, and committed state is replicated to every participating Pinia.
 
 ## Install
 
@@ -8,15 +8,15 @@ An experimental Pinia plugin that synchronizes explicitly opted-in stores and ac
 pnpm add pinia-plugin-synced pinia vue
 ```
 
-`tab-election` is installed as a runtime dependency.
+## Usage
 
-## Create one synchronization domain
-
-Each web context creates its own Pinia and runtime with the same namespace:
+Create one runtime for each Pinia. Use the same namespace in every context that should synchronize:
 
 ```ts
-import { createPinia } from 'pinia'
+// main.ts
+import { createPinia, defineStore } from 'pinia'
 import { createSyncedPiniaPlugin } from 'pinia-plugin-synced'
+import { ref } from 'vue'
 
 const pinia = createPinia()
 const synced = createSyncedPiniaPlugin({
@@ -24,108 +24,82 @@ const synced = createSyncedPiniaPlugin({
 })
 
 pinia.use(synced.plugin)
-```
 
-The runtime owns its `tab-election` participant, Web Lock, and BroadcastChannel. Install it on exactly one Pinia and call `synced.dispose()` at the application lifecycle boundary.
-
-## Opt a store in
-
-Registered actions must be asynchronous because follower tabs call them through RPC:
-
-```ts
+// stores/messages.ts
 export const useMessagesStore = defineStore('messages', () => {
-  const messages = shallowRef<Message[]>([])
+  const messages = ref<string[]>([])
 
-  async function appendMessage(message: Message) {
-    messages.value = [...messages.value, message]
-    return messages.value.length
+  async function send(message: string) {
+    messages.value.push(message)
   }
 
-  return { appendMessage, messages }
+  return { messages, send }
 }, {
   synced: {
-    actions: ['appendMessage'],
+    actions: ['send'],
     state: true,
   },
 })
 ```
 
-An action called in any tab executes against the elected leader's store. Its result or error returns to the caller, while leader snapshots update every Pinia. Direct mutations and `$patch()` calls are sent to the leader as full-state proposals. Multi-step actions publish intermediate mutations; action execution is not an atomic state transaction.
+Calling `send()` in any context returns a Promise and executes the action in the elected leader. Direct mutations and `$patch()` calls are sent to the leader as full-state proposals.
 
-## When to use it
-
-Use this package when:
-
-- every same-origin tab must display one logical Pinia state;
-- selected state-changing actions may be routed asynchronously to one tab;
-- last-arriving direct state proposals are an acceptable conflict policy;
-- every participating tab instantiates the opted-in stores it may need as leader.
-
-## When not to use it
-
-Do not use it when:
-
-- actions must remain synchronous;
-- concurrent field-level edits require CRDT merging;
-- state must synchronize across devices or origins;
-- external side effects require a universal exactly-once guarantee;
-- background authority must survive after every tab closes—a SharedWorker or durable backend is a better owner.
-
-## Delivery and failure semantics
-
-- `tab-election` may redeliver an RPC during acknowledgement loss or leader handoff. The plugin assigns an operation ID and retains the latest 128 completed outcomes for deduplication. Configure `commandHistoryLimit` to change that bound.
-- A leader crash after an external side effect but before publishing the completed operation cannot be resolved generically. Pass an application idempotency key to such a backend.
-- `dispose()` immediately rejects RPC calls made by that runtime. An action that already started in the leader cannot be canceled generically and may still finish; treat disposal during an action like an uncertain leader failure.
-- State uses JSON serialization by default. Provide `serialize` and `deserialize` for other structured-clone-compatible values.
-- Action arguments and return values must support the structured clone algorithm.
-- Mutations made before an action rejects remain committed and are replicated, matching ordinary Pinia behavior.
-- State remains in participating tabs' memory. This prototype does not persist state after every tab closes.
-- HMR replaces implementations of actions already in the allowlist. Changing `synced.actions` itself currently requires a full page reload.
-
-## Runtime diagnostics
+Dispose the runtime when its owning page or window ends:
 
 ```ts
-synced.instanceId
-synced.isLeader()
-synced.getLeaderId()
-synced.getCandidateCount()
-
-const stop = synced.onLeadershipChange((isLeader) => {
-  console.info({ isLeader })
-})
-
-const stopCoordination = synced.onCoordinationChange(({ candidateCount, leaderId }) => {
-  console.info({ candidateCount, leaderId })
-})
+synced.dispose()
 ```
 
-A candidate is a live runtime in the same namespace that can become leader; the count includes the leader. Join and graceful disposal update presence immediately. Abruptly closed or crashed contexts expire after `candidateTimeout` (120 seconds by default), so candidate presence is eventually consistent. `candidateHeartbeatInterval` defaults to 15 seconds.
+## Constraints
 
-## Playground
+- Everything should be `async`: Synchronized actions are asynchronous.
+- Everything uses JSON by default, but custom `serialize` and `deserialize` functions can replace it.
+- Everything returned should support `structuredClone`: Arguments and return values must support structured cloning.
+- We do not offer CRDT merging: direct state proposals use last-arriving-wins semantics. This package does not provide CRDT merging.
+- We do not guarantee application-level idempotency: action RPCs are deduplicated during delivery and leader handoff, but external side effects still need application-level idempotency keys.
+- We do not persist data: synced plugin is not [`pinia-plugin-persistedstate`], all states will be lost once every tabs/windows/iframes closes. If you need persistence, use it with another plugin.
+- Keep Pinia single: synced plugin belongs to exactly one Pinia. Every context that may become leader must instantiate the synchronized stores it serves.
+
+Use a backend, SharedWorker, or another durable owner when state must cross origins, synchronize across devices, or survive after every browser context closes.
+If needed, consider linking them with the API [`linkChannel` offered by `eventa`](https://github.com/moeru-ai/eventa#channels)
+
+## Runtime API
+
+```ts
+synced.instanceId // unique ID of this runtime
+synced.isLeader() // true if this runtime is the elected leader
+synced.getLeaderId() // unique ID of the elected leader runtime
+synced.getCandidateCount() // number of runtimes that have joined the election
+```
+
+## Use with `pinia-plugin-persistedstate`
+
+```ts
+import piniaPluginPersistedstate from 'pinia-plugin-persistedstate'
+
+import { createPinia } from 'pinia'
+import { createSyncedPiniaPlugin } from 'pinia-plugin-synced'
+
+const pinia = createPinia()
+
+const synced = createSyncedPiniaPlugin({
+  namespace: 'my-app:messages',
+})
+
+// Order matters
+pinia.use(piniaPluginPersistedstate)
+pinia.use(synced.plugin)
+```
+
+## Development
 
 ```bash
 pnpm install
-pnpm dev
-```
-
-Open the printed URL to run a top-level Pinia beside another Pinia loaded from the playground's `iframe.html` Vite entry. Add more iframe candidates from the animated connection grid. Each compact peer shows its ID, role, action/state controls, and synchronized history indicators with source/executor tooltips. Open more tabs to add more candidates to the same synchronization domain.
-
-## Browser integration tests
-
-```bash
-pnpm exec playwright install chromium
 pnpm test
+pnpm build
+pnpm --dir playground dev
 ```
 
-The tests open multiple real pages and same-origin sibling iframes in one browser context. They exercise `tab-election`, Web Locks, BroadcastChannel, leader-only action execution, direct state proposals, late-context hydration, and tab leader failover without mocking the transport library.
+## License
 
-## Deploy the playground to Cloudflare Workers
-
-The repository includes production and pull request preview workflows for the static playground. Configure these repository secrets:
-
-- `CLOUDFLARE_API_TOKEN`
-- `CLOUDFLARE_ACCOUNT_ID`
-
-Create `Preview` and `Production` GitHub environments. Configure required reviewers on `Preview`: after approval, that job checks out and executes the pull request source with access to the Cloudflare secrets. Pushes to `main` deploy the playground to production, while pull requests receive a stable `pr-<number>` Workers preview alias and an updated PR comment.
-
-The Worker name and static asset routing live in `playground/wrangler.toml`. Change its `name` if `pinia-plugin-synced` is unavailable in the target Cloudflare account.
+MIT
