@@ -1,0 +1,64 @@
+.markdown-body {
+  --color-code-background: rgb(235, 235, 235);
+
+  padding: 1.25rem 0;
+  line-height: 1.625;
+
+  & p {
+    padding: 0.5rem 0;
+  }
+
+  & h2 {
+    font-size: 1.5rem;
+    padding: 1rem 0;
+  }
+
+  & h3 {
+    font-size: 1.25rem;
+    padding: 0.5rem 0;
+  }
+
+  & pre {
+    overflow-x: auto;
+    border-radius: 12px;
+    padding: 1rem;
+    font-size: 0.75rem;
+  }
+
+  & :not(pre) > code {
+    position: relative;
+    z-index: 0;
+    font-size: 0.875rem;
+
+    &::after {
+      position: absolute;
+      z-index: -1;
+      inset: -5% -2.5%;
+      border-radius: 4px;
+      background-color: var(--color-code-background);
+      content: '';
+    }
+  }
+
+  & ul {
+    margin: 1rem 0 1rem 1rem;
+    list-style-type: disc;
+  }
+
+  & a:not(.icon-span) {
+    color: rgb(72, 142, 255);
+  }
+}
+
+.dark .markdown-body {
+  --color-code-background: rgb(39, 39, 39);
+}
+
+.dark .shiki,
+.dark .shiki span {
+  color: var(--shiki-dark) !important;
+  background-color: var(--shiki-dark-bg) !important;
+  font-style: var(--shiki-dark-font-style) !important;
+  font-weight: var(--shiki-dark-font-weight) !important;
+  text-decoration: var(--shiki-dark-text-decoration) !important;
+}

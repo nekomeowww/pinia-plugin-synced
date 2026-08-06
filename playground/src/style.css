@@ -1,0 +1,26 @@
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overscroll-behavior: none;
+}
+
+html {
+  background: #fff;
+  font-family: "DM Sans", ui-sans-serif, system-ui, sans-serif;
+  transition: all 0.3s ease-in-out;
+  border: none;
+}
+
+html.dark {
+  color: #f5f5f5;
+  background: #121212;
+  color-scheme: dark;
+}
+
+button,
+input {
+  font: inherit;
+}

@@ -1,0 +1,63 @@
+{
+  "name": "pinia-plugin-synced",
+  "type": "module",
+  "version": "0.0.1",
+  "packageManager": "pnpm@11.18.0",
+  "description": "Synchronize explicitly opted-in Pinia stores and actions across same-origin tabs.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nekomeowww/pinia-plugin-synced.git"
+  },
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "import": "./dist/index.mjs"
+    }
+  },
+  "main": "./dist/index.mjs",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.mts",
+  "files": [
+    "LICENSE",
+    "README.md",
+    "dist"
+  ],
+  "scripts": {
+    "attw": "attw --pack . --profile esm-only --ignore-rules cjs-resolves-to-esm",
+    "build": "tsdown",
+    "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm build && pnpm attw && pnpm --dir playground build",
+    "dev": "pnpm --dir playground dev",
+    "lint": "eslint --cache .",
+    "lint:fix": "eslint --cache . --fix",
+    "test": "playwright test",
+    "typecheck": "tsc --noEmit && pnpm --dir playground typecheck"
+  },
+  "peerDependencies": {
+    "pinia": ">=3.0.4 <5",
+    "vue": "^3.5.0"
+  },
+  "dependencies": {
+    "@moeru/std": "catalog:",
+    "es-toolkit": "catalog:",
+    "tab-election": "catalog:"
+  },
+  "devDependencies": {
+    "@antfu/eslint-config": "catalog:",
+    "@arethetypeswrong/cli": "catalog:",
+    "@moeru/eslint-config": "catalog:",
+    "@playwright/test": "catalog:",
+    "@unocss/eslint-config": "catalog:",
+    "@vitejs/plugin-vue": "catalog:",
+    "eslint": "catalog:",
+    "eslint-plugin-oxlint": "catalog:",
+    "jiti": "catalog:",
+    "pinia": "catalog:",
+    "tsdown": "catalog:",
+    "typescript": "catalog:",
+    "vite": "catalog:",
+    "vue": "catalog:",
+    "vue-tsc": "catalog:"
+  }
+}

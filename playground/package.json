@@ -1,0 +1,33 @@
+{
+  "name": "pinia-plugin-synced-playground",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "build": "vue-tsc --noEmit && vite build",
+    "dev": "vite --host 127.0.0.1",
+    "typecheck": "vue-tsc --noEmit"
+  },
+  "dependencies": {
+    "@vueuse/core": "catalog:",
+    "animejs": "catalog:",
+    "pinia": "catalog:",
+    "pinia-plugin-synced": "workspace:*",
+    "reka-ui": "catalog:",
+    "vue": "catalog:"
+  },
+  "devDependencies": {
+    "@iconify-json/mingcute": "catalog:",
+    "@iconify-json/simple-icons": "catalog:",
+    "@iconify-json/solar": "catalog:",
+    "@proj-airi/unocss-preset-chromatic": "catalog:",
+    "@shikijs/markdown-it": "catalog:",
+    "@types/node": "catalog:",
+    "@unocss/reset": "catalog:",
+    "@vitejs/plugin-vue": "catalog:",
+    "typescript": "catalog:",
+    "unocss": "catalog:",
+    "unplugin-vue-markdown": "catalog:",
+    "vite": "catalog:",
+    "vue-tsc": "catalog:"
+  }
+}
