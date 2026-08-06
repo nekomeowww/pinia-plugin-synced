@@ -29,14 +29,16 @@ export interface OperationError extends ErrorLike {
   name: string
 }
 
-/** A completed action retained for bounded at-least-once delivery deduplication. */
+/** A completed action result retained for at-least-once delivery deduplication. */
 export type OperationRecord
   = | {
+    completedAt: number
     error: OperationError
     id: string
     outcome: 'rejected'
   }
   | {
+    completedAt: number
     id: string
     outcome: 'fulfilled'
     result: unknown

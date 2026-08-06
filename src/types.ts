@@ -7,7 +7,7 @@ export interface SyncedOptions {
   candidateHeartbeatInterval?: number
   /** Time without a presence announcement before a candidate expires, in milliseconds. @default 120000 */
   candidateTimeout?: number
-  /** Completed actions retained for at-least-once RPC deduplication. @default 128 */
+  /** Recent completed actions retained after the RPC timeout window; unexpired actions can exceed this limit. @default 128 */
   commandHistoryLimit?: number
   /** Converts a received value back into a Pinia state tree. */
   deserialize?: (state: unknown) => StateTree

@@ -138,15 +138,18 @@ export function createSyncedPiniaPlugin(
       return
 
     const current = normalizeDomainState(tab.getState())
-    const operations = operation
-      ? [
-          ...current.operations.filter(item => item.id !== operation.id),
-          operation,
-        ].slice(-resolvedOptions.commandHistoryLimit)
+    const completedOperations = operation
+      ? [...current.operations.filter(item => item.id !== operation.id), operation]
       : current.operations
 
+    const historyStart = Math.max(0, completedOperations.length - resolvedOptions.commandHistoryLimit)
+    // A caller can retry until its RPC timeout. Keep every result that a late retry can still reference.
+    const retryWindowOpenedAt = Date.now() - resolvedOptions.callTimeout
+    const retryWindowStart = completedOperations.findIndex(item => item.completedAt >= retryWindowOpenedAt)
+    const retentionStart = retryWindowStart === -1 ? historyStart : Math.min(historyStart, retryWindowStart)
+
     tab.setState({
-      operations,
+      operations: completedOperations.slice(retentionStart),
       revision: current.revision + 1,
       stores: snapshotRegisteredStores(current.stores),
     })
@@ -216,12 +219,12 @@ export function createSyncedPiniaPlugin(
       .then(
         (result) => {
           const clonedResult = structuredClone(result)
-          commitState({ id: command.operationId, outcome: 'fulfilled', result: clonedResult })
+          commitState({ completedAt: Date.now(), id: command.operationId, outcome: 'fulfilled', result: clonedResult })
           return clonedResult
         },
         (error: unknown) => {
           const operationError = toError(error)
-          commitState({ error: { message: operationError.message, name: operationError.name }, id: command.operationId, outcome: 'rejected' })
+          commitState({ completedAt: Date.now(), error: { message: operationError.message, name: operationError.name }, id: command.operationId, outcome: 'rejected' })
           throw operationError
         },
       )
