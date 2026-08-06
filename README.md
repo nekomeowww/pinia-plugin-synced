@@ -75,6 +75,7 @@ synced.getCandidateCount() // number of runtimes that have joined the election
 ## Use with `pinia-plugin-persistedstate`
 
 ```ts
+// main.ts
 import piniaPluginPersistedstate from 'pinia-plugin-persistedstate'
 
 import { createPinia } from 'pinia'
@@ -89,6 +90,23 @@ const synced = createSyncedPiniaPlugin({
 // Order matters
 pinia.use(piniaPluginPersistedstate)
 pinia.use(synced.plugin)
+
+// stores/messages.ts
+export const useMessagesStore = defineStore('messages', () => {
+  const messages = ref<string[]>([])
+
+  async function send(message: string) {
+    messages.value.push(message)
+  }
+
+  return { messages, send }
+}, {
+  persist: true,
+  synced: {
+    actions: ['send'],
+    state: true,
+  },
+})
 ```
 
 ## Development
