@@ -2,6 +2,8 @@
 
 Synchronize selected Pinia stores and actions across same-origin tabs, windows, and iframes. One context is elected as the leader: actions run there, and committed state is replicated to every participating Pinia.
 
+[Playground](https://pinia-synced.ayaka.io)
+
 ## Install
 
 ```bash
@@ -56,7 +58,7 @@ synced.dispose()
 - Everything uses JSON by default, but custom `serialize` and `deserialize` functions can replace it.
 - Everything returned should support `structuredClone`: Arguments and return values must support structured cloning.
 - We do not offer CRDT merging: direct state proposals use last-arriving-wins semantics. This package does not provide CRDT merging.
-- We do not guarantee application-level idempotency: action RPCs are deduplicated during delivery and leader handoff, but external side effects still need application-level idempotency keys.
+- We do not guarantee application-level idempotency: action RPCs stay deduplicated for the full RPC timeout, but external side effects still need idempotency keys.
 - We do not persist data: synced plugin is not [`pinia-plugin-persistedstate`], all states will be lost once every tabs/windows/iframes closes. If you need persistence, use it with another plugin.
 - Keep Pinia single: synced plugin belongs to exactly one Pinia. Every context that may become leader must instantiate the synchronized stores it serves.
 
