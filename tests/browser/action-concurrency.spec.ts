@@ -11,8 +11,17 @@ import {
   waitForSingleLeader,
 } from './test-utils'
 
-const actionsPerPeer = 100
+const actionsPerFollower = 150
 
+// https://github.com/nekomeowww/pinia-plugin-synced/actions/runs/31097410416/job/92602618715
+// ROOT CAUSE:
+//
+// A slow leader can receive a retry after more than 128 newer actions remove the first result from command history.
+// The retry then enters the action again because neither the completed history nor the in-flight map contains its operation ID.
+//
+// Before the fix, 300 unique commands entered the action 450 times in CI.
+//
+// The fix retains every result for the RPC timeout. The count limit applies after this retry window ends.
 test('settles hundreds of concurrent actions exactly once in the elected leader', async ({ context }) => {
   const peers = await Promise.all([
     openPagePeer(context),
@@ -25,12 +34,20 @@ test('settles hundreds of concurrent actions exactly once in the elected leader'
   const electedLeaderId = await instanceId(election.leader)
   await expectCoordination(peers, electedLeaderId, peers.length)
 
-  const batches = peers.map((_peer, peerIndex) => (
-    Array.from({ length: actionsPerPeer }, (_value, actionIndex) => `peer-${peerIndex}-action-${actionIndex}`)
+  const batches = election.followers.map((_peer, peerIndex) => (
+    Array.from({ length: actionsPerFollower }, (_value, actionIndex) => `follower-${peerIndex}-action-${actionIndex}`)
   ))
   const expectedMessages = batches.flat()
 
-  await Promise.all(peers.map((peer, index) => submitBurst(peer, batches[index]!)))
+  const blockedLeader = election.leader.surface.evaluate(() => {
+    const resumeAt = performance.now() + 1_200
+    while (performance.now() < resumeAt) {
+      // Keep the leader busy so follower acknowledgements exceed the 500 ms retry interval.
+    }
+  })
+  await new Promise(resolve => setTimeout(resolve, 100))
+  await Promise.all(election.followers.map((peer, index) => submitBurst(peer, batches[index]!)))
+  await blockedLeader
 
   for (const peer of peers) {
     const messageItems = peer.surface.locator('.message-item')

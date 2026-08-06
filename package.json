@@ -50,6 +50,7 @@
     "@playwright/test": "catalog:",
     "@unocss/eslint-config": "catalog:",
     "@vitejs/plugin-vue": "catalog:",
+    "bumpp": "catalog:",
     "eslint": "catalog:",
     "eslint-plugin-oxlint": "catalog:",
     "jiti": "catalog:",
