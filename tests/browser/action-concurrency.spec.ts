@@ -6,8 +6,8 @@ import { expect, test } from '@playwright/test'
 
 import {
   expectCoordination,
-  instanceId,
   openPagePeer,
+  participantId,
   waitForSingleLeader,
 } from './test-utils'
 
@@ -31,7 +31,7 @@ test('settles hundreds of concurrent actions exactly once in the elected leader'
   await Promise.all(peers.map(peer => peer.surface.emulateMedia({ reducedMotion: 'reduce' })))
 
   const election = await waitForSingleLeader(peers)
-  const electedLeaderId = await instanceId(election.leader)
+  const electedLeaderId = await participantId(election.leader)
   await expectCoordination(peers, electedLeaderId, peers.length)
 
   const batches = election.followers.map((_peer, peerIndex) => (

@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { shallowRef } from 'vue'
 
-import { instanceId } from '../modules/synced'
+import { participantId } from '../modules/synced'
 
 export interface Message {
   createdAt: number
@@ -24,7 +24,7 @@ export const useMessagesStore = defineStore('messages', () => {
     if (messages.value.some(item => item.id === message.id))
       return
 
-    messages.value = [...messages.value, { ...message, executedBy: instanceId.slice(0, 8) }]
+    messages.value = [...messages.value, { ...message, executedBy: participantId.slice(0, 8) }]
   }
 
   async function clearMessages() {

@@ -7,7 +7,7 @@ import MessagesPanel from './components/messages-panel.vue'
 import GettingStarted from './docs/getting-started.md'
 import Introduction from './docs/introduction.md'
 import Ending from './docs/ending.md'
-import { candidateCount, instanceId, isLeader, leaderId } from './modules/synced'
+import { isLeader, leaderId, participantCount, participantId } from './modules/synced'
 
 const isDark = useDark({ disableTransition: false })
 const toggleDark = useToggle(isDark)
@@ -64,8 +64,8 @@ function openPeerWindow() {
 
         <p :class="['my-2']">
           The current tab is
-          <code :class="['instance-id rounded-lg bg-primary-200 px-2 py-1 font-mono dark:bg-primary']">
-            {{ instanceId.slice(0, 8) }}
+          <code :class="['participant-id rounded-lg bg-primary-200 px-2 py-1 font-mono dark:bg-primary']">
+            {{ participantId.slice(0, 8) }}
           </code>
           and is currently the
           <strong :class="['leadership-role text-primary-700 dark:text-primary-300']">{{ isLeader ? 'leader' : 'follower' }}</strong>.
@@ -94,8 +94,8 @@ function openPeerWindow() {
         <p :class="['my-2 text-neutral-600 dark:text-neutral-300']">
           Leader
           <code :class="['leader-id font-mono text-primary']">{{ leaderId?.slice(0, 8) ?? 'electing' }}</code>,
-          in total <span :class="['candidate-count text-primary']">{{ candidateCount }}</span>
-          {{ candidateCount === 1 ? 'candidate (tab/iframe/window)' : 'candidates (tabs/iframes/windows)' }}.
+          in total <span :class="['participant-count text-primary']">{{ participantCount }}</span>
+          {{ participantCount === 1 ? 'participant (tab/iframe/window)' : 'participants (tabs/iframes/windows)' }}.
         </p>
       </section>
 

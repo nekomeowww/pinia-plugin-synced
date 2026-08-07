@@ -8,13 +8,13 @@ export interface ActionCommand {
   storeId: string
 }
 
-/** Presence messages exchanged directly between synchronization candidates. */
+/** Presence messages exchanged directly between synchronization participants. */
 export type CoordinationMessage
-  = | { candidateId: string, type: 'candidate-heartbeat' }
-    | { candidateId: string, type: 'candidate-hello' }
-    | { candidateId: string, type: 'candidate-leave' }
-    | { candidateId: string, type: 'candidate-present' }
-    | { leaderId: string, type: 'leader-present' }
+  = | { leaderId: string, type: 'leader-present' }
+    | { participantId: string, type: 'participant-heartbeat' }
+    | { participantId: string, type: 'participant-hello' }
+    | { participantId: string, type: 'participant-leave' }
+    | { participantId: string, type: 'participant-present' }
 
 /** The leader-owned state replicated by tab-election to every participating tab. */
 export interface DomainState {

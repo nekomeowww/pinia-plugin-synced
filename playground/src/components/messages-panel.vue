@@ -8,13 +8,13 @@ import { usePreferredReducedMotion } from '@vueuse/core'
 import { storeToRefs } from 'pinia'
 import { computed, nextTick, onBeforeUnmount, onMounted, shallowReactive, shallowRef, useTemplateRef, watch } from 'vue'
 
-import { instanceId } from '../modules/synced'
+import { participantId } from '../modules/synced'
 import { appendMessageExecutions, useMessagesStore } from '../stores/messages'
 
 const messagesStore = useMessagesStore()
 const { messages } = storeToRefs(messagesStore)
 const draft = shallowRef('')
-const shortInstanceId = computed(() => instanceId.slice(0, 8))
+const shortParticipantId = computed(() => participantId.slice(0, 8))
 const reducedMotion = usePreferredReducedMotion()
 const messageList = useTemplateRef<HTMLOListElement>('message-list')
 const messageCountValue = useTemplateRef<HTMLSpanElement>('message-count-value')
@@ -105,7 +105,7 @@ async function appendMessage() {
   await messagesStore.appendMessage({
     createdAt: Date.now(),
     id: crypto.randomUUID(),
-    sourceId: shortInstanceId.value,
+    sourceId: shortParticipantId.value,
     text,
   })
   draft.value = ''
@@ -123,9 +123,9 @@ function patchMessage() {
   messagesStore.$patch({
     messages: [...messages.value, {
       createdAt: Date.now(),
-      executedBy: shortInstanceId.value,
+      executedBy: shortParticipantId.value,
       id: crypto.randomUUID(),
-      sourceId: shortInstanceId.value,
+      sourceId: shortParticipantId.value,
       text,
     }],
   })
@@ -234,8 +234,8 @@ function patchMessage() {
         from <span :class="[
           'px-1 py-0.5',
           'rounded-md',
-          instanceId.startsWith(message.sourceId) ? 'bg-primary-100 text-primary-700' : '',
-          instanceId.startsWith(message.sourceId) ? 'dark:bg-primary-900 dark:text-primary-300' : ''
+          participantId.startsWith(message.sourceId) ? 'bg-primary-100 text-primary-700' : '',
+          participantId.startsWith(message.sourceId) ? 'dark:bg-primary-900 dark:text-primary-300' : ''
         ]">{{ message.sourceId }}</span> · applied by
         <span
           :class="[
@@ -243,8 +243,8 @@ function patchMessage() {
             'font-mono text-primary-700 dark:text-primary-300',
             'px-1 py-0.5',
             'rounded-md',
-            instanceId.startsWith(message.executedBy) ? 'bg-primary-100 text-primary-700' : '',
-            instanceId.startsWith(message.executedBy) ? 'dark:bg-primary-900 dark:text-primary-300' : ''
+            participantId.startsWith(message.executedBy) ? 'bg-primary-100 text-primary-700' : '',
+            participantId.startsWith(message.executedBy) ? 'dark:bg-primary-900 dark:text-primary-300' : ''
           ]"
         >
           {{ message.executedBy }}

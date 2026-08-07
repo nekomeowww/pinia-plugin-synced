@@ -14,13 +14,13 @@ import {
 } from 'reka-ui'
 import { computed, nextTick, onBeforeUnmount, onMounted, shallowRef, useTemplateRef, watch } from 'vue'
 
-import { instanceId, isLeader } from '../modules/synced'
+import { isLeader, participantId } from '../modules/synced'
 import { useMessagesStore } from '../stores/messages'
 
 const messagesStore = useMessagesStore()
 const { messages } = storeToRefs(messagesStore)
 const draft = shallowRef('')
-const shortInstanceId = computed(() => instanceId.slice(0, 8))
+const shortParticipantId = computed(() => participantId.slice(0, 8))
 const messageList = useTemplateRef<HTMLDivElement>('message-list')
 let messageLayout: AutoLayout | undefined
 
@@ -77,7 +77,7 @@ async function sendMessage() {
   await messagesStore.appendMessage({
     createdAt: Date.now(),
     id: crypto.randomUUID(),
-    sourceId: shortInstanceId.value,
+    sourceId: shortParticipantId.value,
     text,
   })
   draft.value = ''
@@ -91,9 +91,9 @@ function updateState() {
   messagesStore.$patch({
     messages: [...messages.value, {
       createdAt: Date.now(),
-      executedBy: shortInstanceId.value,
+      executedBy: shortParticipantId.value,
       id: crypto.randomUUID(),
-      sourceId: shortInstanceId.value,
+      sourceId: shortParticipantId.value,
       text,
     }],
   })
@@ -106,7 +106,7 @@ function updateState() {
     <p :class="['my-0 flex items-center gap-4 text-sm']">
       <span>
         ID
-        <code :class="['font-mono']">{{ shortInstanceId }}</code>
+        <code :class="['font-mono']">{{ shortParticipantId }}</code>
       </span>
       <span>
         Role

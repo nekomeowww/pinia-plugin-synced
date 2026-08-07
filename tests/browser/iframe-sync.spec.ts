@@ -4,8 +4,8 @@ import {
   baseURL,
   expectCoordination,
   expectMessages,
-  instanceId,
   openFramePeer,
+  participantId,
   patchMessage,
   sendMessage,
   trackErrors,
@@ -27,7 +27,7 @@ test('executes each synced action in exactly one same-origin iframe leader', asy
   const first = await openFramePeer(host, 'first-peer', peerURL, errors)
   const second = await openFramePeer(host, 'second-peer', peerURL, errors)
   const election = await waitForSingleLeader([first, second])
-  const leaderId = await instanceId(election.leader)
+  const leaderId = await participantId(election.leader)
   const follower = election.followers[0]!
   await expectCoordination([first, second], leaderId, 2)
 

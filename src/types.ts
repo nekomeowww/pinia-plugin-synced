@@ -3,10 +3,6 @@ import type { StateTree, StoreActions } from 'pinia'
 export interface SyncedOptions {
   /** Timeout for an action or state RPC to the elected leader, in milliseconds. @default 30000 */
   callTimeout?: number
-  /** Interval between candidate presence announcements, in milliseconds. @default 15000 */
-  candidateHeartbeatInterval?: number
-  /** Time without a presence announcement before a candidate expires, in milliseconds. @default 120000 */
-  candidateTimeout?: number
   /** Recent completed actions retained after the RPC timeout window; unexpired actions can exceed this limit. @default 128 */
   commandHistoryLimit?: number
   /** Converts a received value back into a Pinia state tree. */
@@ -15,6 +11,10 @@ export interface SyncedOptions {
   namespace?: string
   /** Receives background transport, serialization, and state application failures. */
   onError?: (error: unknown) => void
+  /** Interval between participant presence announcements, in milliseconds. @default 15000 */
+  participantHeartbeatInterval?: number
+  /** Time without a presence announcement before a participant expires, in milliseconds. @default 120000 */
+  participantTimeout?: number
   /** Converts reactive Pinia state into a structured-clone-compatible value. */
   serialize?: (state: StateTree) => unknown
 }
