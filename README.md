@@ -68,10 +68,10 @@ If needed, consider linking them with the API [`linkChannel` offered by `eventa`
 ## Runtime API
 
 ```ts
-synced.instanceId // unique ID of this runtime
+synced.participantId // unique ID of this runtime
 synced.isLeader() // true if this runtime is the elected leader
 synced.getLeaderId() // unique ID of the elected leader runtime
-synced.getCandidateCount() // number of runtimes that have joined the election
+synced.getParticipantCount() // number of runtimes in the synchronization domain
 ```
 
 ## Use with `pinia-plugin-persistedstate`

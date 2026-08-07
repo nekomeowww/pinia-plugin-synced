@@ -40,8 +40,6 @@ interface StoreRegistration {
 /** Runtime defaults applied before validating and starting the synchronization domain. */
 const defaultOptions: ResolvedSyncedPiniaPluginOptions = {
   callTimeout: 30_000,
-  candidateHeartbeatInterval: 15_000,
-  candidateTimeout: 120_000,
   commandHistoryLimit: 128,
   deserialize(state): StateTree {
     if (!state || typeof state !== 'object' || Array.isArray(state))
@@ -51,15 +49,17 @@ const defaultOptions: ResolvedSyncedPiniaPluginOptions = {
   },
   namespace: 'pinia-plugin-synced',
   onError: noop,
+  participantHeartbeatInterval: 15_000,
+  participantTimeout: 120_000,
   serialize: state => JSON.parse(JSON.stringify(state)) as unknown,
 }
 
 /** Coordination information observed by one synchronization runtime. */
 export interface SyncedPiniaCoordination {
-  /** Number of live election candidates, including the leader. */
-  candidateCount: number
   /** Current leader's tab-election participant ID, or undefined while electing. */
   leaderId: string | undefined
+  /** Number of live synchronization participants, including the leader. */
+  participantCount: number
 }
 
 /** Owns one Pinia plugin and the tab-election lifecycle for one synchronization domain. */
@@ -69,18 +69,18 @@ export interface SyncedPiniaRuntime {
    * An action already executing in another tab cannot be canceled generically.
    */
   dispose: () => void
-  /** Returns the number of recently observed election candidates, including the leader. */
-  getCandidateCount: () => number
   /** Returns the current leader's participant ID, or undefined while electing. */
   getLeaderId: () => string | undefined
-  /** Current tab-election participant ID. */
-  instanceId: string
+  /** Returns the number of recently observed synchronization participants. */
+  getParticipantCount: () => number
   /** Reports whether this web context currently owns the synchronization domain. */
   isLeader: () => boolean
-  /** Subscribes to leader identity and candidate-presence changes. */
+  /** Subscribes to leader identity and participant-presence changes. */
   onCoordinationChange: (listener: (coordination: SyncedPiniaCoordination) => void) => () => void
   /** Subscribes to leader-role changes for diagnostics and UI. */
   onLeadershipChange: (listener: (isLeader: boolean) => void) => () => void
+  /** Current synchronization participant ID. */
+  participantId: string
   /** Install this plugin on exactly one Pinia instance. */
   plugin: PiniaPlugin
 }
@@ -99,16 +99,16 @@ export function createSyncedPiniaPlugin(
   const resolvedOptions = merge(defaultOptions, options)
   if (!Number.isSafeInteger(resolvedOptions.commandHistoryLimit) || resolvedOptions.commandHistoryLimit < 1)
     throw new RangeError('commandHistoryLimit must be a positive safe integer.')
-  if (!Number.isSafeInteger(resolvedOptions.candidateHeartbeatInterval) || resolvedOptions.candidateHeartbeatInterval < 1)
-    throw new RangeError('candidateHeartbeatInterval must be a positive safe integer.')
-  if (!Number.isSafeInteger(resolvedOptions.candidateTimeout) || resolvedOptions.candidateTimeout <= resolvedOptions.candidateHeartbeatInterval)
-    throw new RangeError('candidateTimeout must be a safe integer greater than candidateHeartbeatInterval.')
+  if (!Number.isSafeInteger(resolvedOptions.participantHeartbeatInterval) || resolvedOptions.participantHeartbeatInterval < 1)
+    throw new RangeError('participantHeartbeatInterval must be a positive safe integer.')
+  if (!Number.isSafeInteger(resolvedOptions.participantTimeout) || resolvedOptions.participantTimeout <= resolvedOptions.participantHeartbeatInterval)
+    throw new RangeError('participantTimeout must be a safe integer greater than participantHeartbeatInterval.')
 
   const tab = new Tab<DomainState>(resolvedOptions.namespace, { callTimeout: resolvedOptions.callTimeout })
   const registrations = new Map<string, StoreRegistration>()
   const inFlightActions = new Map<string, Promise<unknown>>()
   const coordinationListeners = new Set<(coordination: SyncedPiniaCoordination) => void>()
-  const candidateLastSeen = new Map([[tab.id, Date.now()]])
+  const participantLastSeen = new Map([[tab.id, Date.now()]])
   const leadershipListeners = new Set<(isLeader: boolean) => void>()
   const pendingCalls = new Set<PendingCall>()
   let disposed = false
@@ -116,7 +116,7 @@ export function createSyncedPiniaPlugin(
   let ownerPinia: Pinia | undefined
 
   function notifyCoordinationChange() {
-    const coordination = { candidateCount: candidateLastSeen.size, leaderId }
+    const coordination = { leaderId, participantCount: participantLastSeen.size }
     for (const listener of coordinationListeners)
       listener(coordination)
   }
@@ -274,52 +274,82 @@ export function createSyncedPiniaPlugin(
     applyDomainState(event.data)
   }
 
+  /**
+   * Updates participant presence and leader identity from a coordination message.
+   *
+   * Triggering workflow:
+   *
+   * {@link Tab}
+   *   -> `message`
+   *     -> {@link handleCoordinationMessage}
+   *
+   * Upstream:
+   * - {@link Tab.addEventListener}
+   *
+   * Downstream:
+   * - {@link notifyCoordinationChange}
+   */
   const handleCoordinationMessage = (event: Event) => {
     if (!(event instanceof MessageEvent) || !event.data || typeof event.data !== 'object')
       return
 
     const message = event.data as Partial<CoordinationMessage>
     if (message.type === 'leader-present' && typeof message.leaderId === 'string') {
-      const countBefore = candidateLastSeen.size
-      candidateLastSeen.set(message.leaderId, Date.now())
-      const changed = leaderId !== message.leaderId || countBefore !== candidateLastSeen.size
+      const countBefore = participantLastSeen.size
+      participantLastSeen.set(message.leaderId, Date.now())
+      const changed = leaderId !== message.leaderId || countBefore !== participantLastSeen.size
       leaderId = message.leaderId
       if (changed)
         notifyCoordinationChange()
       return
     }
 
-    if (!('candidateId' in message) || typeof message.candidateId !== 'string')
+    if (!('participantId' in message) || typeof message.participantId !== 'string')
       return
 
-    if (message.type === 'candidate-leave') {
-      const changed = candidateLastSeen.delete(message.candidateId)
-      if (leaderId === message.candidateId)
+    if (message.type === 'participant-leave') {
+      const changed = participantLastSeen.delete(message.participantId)
+      if (leaderId === message.participantId)
         leaderId = undefined
       if (changed)
         notifyCoordinationChange()
       return
     }
 
-    if (message.type !== 'candidate-heartbeat' && message.type !== 'candidate-hello' && message.type !== 'candidate-present')
+    if (message.type !== 'participant-heartbeat' && message.type !== 'participant-hello' && message.type !== 'participant-present')
       return
 
-    const countBefore = candidateLastSeen.size
-    candidateLastSeen.set(message.candidateId, Date.now())
-    if (countBefore !== candidateLastSeen.size)
+    const countBefore = participantLastSeen.size
+    participantLastSeen.set(message.participantId, Date.now())
+    if (countBefore !== participantLastSeen.size)
       notifyCoordinationChange()
 
-    if (message.type === 'candidate-hello') {
-      tab.send({ candidateId: tab.id, type: 'candidate-present' } satisfies CoordinationMessage, message.candidateId)
+    if (message.type === 'participant-hello') {
+      tab.send({ participantId: tab.id, type: 'participant-present' } satisfies CoordinationMessage, message.participantId)
       if (tab.isLeader)
-        tab.send({ leaderId: tab.id, type: 'leader-present' } satisfies CoordinationMessage, message.candidateId)
+        tab.send({ leaderId: tab.id, type: 'leader-present' } satisfies CoordinationMessage, message.participantId)
     }
   }
 
+  /**
+   * Publishes the runtime's new leadership role to participants and listeners.
+   *
+   * Triggering workflow:
+   *
+   * {@link Tab}
+   *   -> `leadershipchange`
+   *     -> {@link handleLeadershipChange}
+   *
+   * Upstream:
+   * - {@link Tab.addEventListener}
+   *
+   * Downstream:
+   * - {@link notifyCoordinationChange}
+   */
   const handleLeadershipChange = () => {
     if (tab.isLeader) {
       leaderId = tab.id
-      candidateLastSeen.set(tab.id, Date.now())
+      participantLastSeen.set(tab.id, Date.now())
       tab.send({ leaderId: tab.id, type: 'leader-present' } satisfies CoordinationMessage)
     }
     else if (leaderId === tab.id) {
@@ -343,15 +373,15 @@ export function createSyncedPiniaPlugin(
     resolvedOptions.onError(error)
   })
 
-  tab.send({ candidateId: tab.id, type: 'candidate-hello' } satisfies CoordinationMessage)
+  tab.send({ participantId: tab.id, type: 'participant-hello' } satisfies CoordinationMessage)
   const heartbeatTimer = setInterval(() => {
     const now = Date.now()
     let changed = false
-    candidateLastSeen.set(tab.id, now)
-    for (const [candidateId, lastSeen] of candidateLastSeen) {
-      if (candidateId !== tab.id && now - lastSeen > resolvedOptions.candidateTimeout) {
-        candidateLastSeen.delete(candidateId)
-        if (leaderId === candidateId)
+    participantLastSeen.set(tab.id, now)
+    for (const [participantId, lastSeen] of participantLastSeen) {
+      if (participantId !== tab.id && now - lastSeen > resolvedOptions.participantTimeout) {
+        participantLastSeen.delete(participantId)
+        if (leaderId === participantId)
           leaderId = undefined
         changed = true
       }
@@ -359,8 +389,8 @@ export function createSyncedPiniaPlugin(
     if (changed)
       notifyCoordinationChange()
 
-    tab.send({ candidateId: tab.id, type: 'candidate-heartbeat' } satisfies CoordinationMessage)
-  }, resolvedOptions.candidateHeartbeatInterval)
+    tab.send({ participantId: tab.id, type: 'participant-heartbeat' } satisfies CoordinationMessage)
+  }, resolvedOptions.participantHeartbeatInterval)
 
   function invokeLeader<Result>(method: keyof LeaderApi, command: ActionCommand | StateCommand) {
     if (disposed)
@@ -542,7 +572,7 @@ export function createSyncedPiniaPlugin(
 
       disposed = true
 
-      tab.send({ candidateId: tab.id, type: 'candidate-leave' } satisfies CoordinationMessage)
+      tab.send({ participantId: tab.id, type: 'participant-leave' } satisfies CoordinationMessage)
       clearInterval(heartbeatTimer)
 
       tab.removeEventListener('state', handleState)
@@ -564,16 +594,15 @@ export function createSyncedPiniaPlugin(
       pendingCalls.clear()
       tab.close()
     },
-    getCandidateCount: () => candidateLastSeen.size,
     getLeaderId: () => leaderId,
-    instanceId: tab.id,
+    getParticipantCount: () => participantLastSeen.size,
     isLeader: () => tab.isLeader,
     onCoordinationChange(listener) {
       if (disposed)
         return noop
 
       coordinationListeners.add(listener)
-      listener({ candidateCount: candidateLastSeen.size, leaderId })
+      listener({ leaderId, participantCount: participantLastSeen.size })
 
       return () => coordinationListeners.delete(listener)
     },
@@ -586,6 +615,7 @@ export function createSyncedPiniaPlugin(
 
       return () => leadershipListeners.delete(listener)
     },
+    participantId: tab.id,
     plugin,
   }
 }
@@ -594,14 +624,14 @@ function normalizeDomainState(state: unknown): DomainState {
   if (!state || typeof state !== 'object' || Array.isArray(state))
     return { operations: [], revision: 0, stores: {} }
 
-  const candidate = state as Partial<DomainState>
+  const value = state as Partial<DomainState>
   return {
-    operations: Array.isArray(candidate.operations) ? candidate.operations : [],
-    revision: Number.isSafeInteger(candidate.revision) && (candidate.revision ?? 0) >= 0
-      ? candidate.revision ?? 0
+    operations: Array.isArray(value.operations) ? value.operations : [],
+    revision: Number.isSafeInteger(value.revision) && (value.revision ?? 0) >= 0
+      ? value.revision ?? 0
       : 0,
-    stores: candidate.stores && typeof candidate.stores === 'object' && !Array.isArray(candidate.stores)
-      ? candidate.stores
+    stores: value.stores && typeof value.stores === 'object' && !Array.isArray(value.stores)
+      ? value.stores
       : {},
   }
 }

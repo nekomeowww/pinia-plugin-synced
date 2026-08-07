@@ -16,11 +16,11 @@ export function baseURL(testInfo: TestInfo) {
   return value
 }
 
-/** Waits for every peer to observe the same leader and live candidate count. */
-export async function expectCoordination(peers: Peer[], leaderId: string, candidateCount: number) {
+/** Waits for every peer to observe the same leader and live participant count. */
+export async function expectCoordination(peers: Peer[], leaderId: string, participantCount: number) {
   for (const peer of peers) {
     await expect(peer.surface.locator('.leader-id')).toHaveText(leaderId)
-    await expect(peer.surface.locator('.candidate-count')).toHaveText(String(candidateCount))
+    await expect(peer.surface.locator('.participant-count')).toHaveText(String(participantCount))
   }
 }
 
@@ -29,13 +29,6 @@ export async function expectMessages(peer: Peer, texts: string[]) {
   await expect(peer.surface.locator('.message-item')).toHaveCount(texts.length)
   for (const text of texts)
     await expect(peer.surface.locator('.message-list')).toContainText(text)
-}
-
-export async function instanceId(peer: Peer) {
-  const value = await peer.surface.locator('.instance-id').textContent()
-  if (!value)
-    throw new Error('Peer did not expose an instance ID.')
-  return value
 }
 
 export async function openFramePeer(host: Page, name: string, url: string, errors: string[]): Promise<Peer<Frame>> {
@@ -60,6 +53,13 @@ export async function openPagePeer(context: BrowserContext): Promise<Peer<Page>>
   await page.goto('/?embed=false')
   await expect(page.locator('.leadership-role')).toBeVisible()
   return { errors, surface: page }
+}
+
+export async function participantId(peer: Peer) {
+  const value = await peer.surface.locator('.participant-id').textContent()
+  if (!value)
+    throw new Error('Peer did not expose a participant ID.')
+  return value
 }
 
 export async function patchMessage(peer: Peer, text: string) {

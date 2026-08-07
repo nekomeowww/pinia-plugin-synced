@@ -3,8 +3,8 @@ import { expect, test } from '@playwright/test'
 import {
   expectCoordination,
   expectMessages,
-  instanceId,
   openPagePeer,
+  participantId,
   patchMessage,
   sendMessage,
   waitForSingleLeader,
@@ -21,7 +21,7 @@ test('executes each synced action in exactly one tab leader across failover', as
   const first = await openPagePeer(context)
   const second = await openPagePeer(context)
   const initialElection = await waitForSingleLeader([first, second])
-  const initialLeaderId = await instanceId(initialElection.leader)
+  const initialLeaderId = await participantId(initialElection.leader)
   const initialFollower = initialElection.followers[0]!
   await expectCoordination([first, second], initialLeaderId, 2)
 
@@ -34,7 +34,7 @@ test('executes each synced action in exactly one tab leader across failover', as
   await expect(initialElection.leader.surface.locator('.append-message-executions')).toHaveText('1')
   await expect(initialFollower.surface.locator('.append-message-executions')).toHaveText('0')
 
-  const initialFollowerId = await instanceId(initialFollower)
+  const initialFollowerId = await participantId(initialFollower)
   await patchMessage(initialFollower, 'direct state proposal')
   await expectMessages(first, ['from follower', 'direct state proposal'])
   await expectMessages(second, ['from follower', 'direct state proposal'])
@@ -49,7 +49,7 @@ test('executes each synced action in exactly one tab leader across failover', as
   await initialElection.leader.surface.close()
   const survivors = [initialFollower, latePeer]
   const successorElection = await waitForSingleLeader(survivors)
-  const successorId = await instanceId(successorElection.leader)
+  const successorId = await participantId(successorElection.leader)
   expect(successorId).not.toBe(initialLeaderId)
   await expectCoordination(survivors, successorId, 2)
 

@@ -4,13 +4,13 @@ import { computed, shallowRef } from 'vue'
 export const synced = createSyncedPiniaPlugin({
   namespace: 'pinia-plugin-synced:playground',
 })
-export const instanceId = synced.instanceId
+export const participantId = synced.participantId
 export const isLeader = shallowRef(synced.isLeader())
 const coordination = shallowRef({
-  candidateCount: synced.getCandidateCount(),
   leaderId: synced.getLeaderId(),
+  participantCount: synced.getParticipantCount(),
 })
-export const candidateCount = computed(() => coordination.value.candidateCount)
+export const participantCount = computed(() => coordination.value.participantCount)
 export const leaderId = computed(() => coordination.value.leaderId)
 
 const stopLeadershipListener = synced.onLeadershipChange((value) => {
