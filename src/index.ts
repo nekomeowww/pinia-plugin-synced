@@ -1,3 +1,3 @@
 export { createSyncedPiniaPlugin } from './plugin'
 export type { SyncedPiniaCoordination, SyncedPiniaRuntime } from './plugin'
-export type { SyncedOptions as SyncedPiniaPluginOptions, SyncedStoreOptions } from './types'
+export type { LeadershipMode, SyncedOptions, SyncedOptions as SyncedPiniaPluginOptions, SyncedStoreOptions } from './types'

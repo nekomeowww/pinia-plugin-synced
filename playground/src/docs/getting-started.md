@@ -12,12 +12,15 @@ import App from './App.vue'
 const app = createApp(App)
 const pinia = createPinia()
 const synced = createSyncedPiniaPlugin({
+  // leadership: 'follower-preferred', <- default
   namespace: 'my-app:messages',
 })
 
 pinia.use(synced.plugin)
 app.use(pinia)
 ```
+
+> For situations where one participant should become the leader, use `leadership: 'leader-only'`. When it joins an existing domain, it receives the committed state and then takes leadership once.
 
 Opt each shared store in through its Pinia options. State synchronization is enabled by default; list the asynchronous actions that must execute in the leader.
 

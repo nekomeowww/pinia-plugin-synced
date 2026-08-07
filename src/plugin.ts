@@ -8,6 +8,8 @@ import { noop } from 'es-toolkit'
 import { Tab } from 'tab-election'
 import { onScopeDispose, toRaw } from 'vue'
 
+import { leadershipModes } from './types'
+
 interface HotStoreBoundary {
   _hotUpdate?: (newStore: StoreGeneric) => void
 }
@@ -47,6 +49,7 @@ const defaultOptions: ResolvedSyncedPiniaPluginOptions = {
 
     return state as StateTree
   },
+  leadership: 'follower-preferred',
   namespace: 'pinia-plugin-synced',
   onError: noop,
   participantHeartbeatInterval: 15_000,
@@ -97,6 +100,8 @@ export function createSyncedPiniaPlugin(
   options: SyncedOptions = {},
 ): SyncedPiniaRuntime {
   const resolvedOptions = merge(defaultOptions, options)
+  if (!leadershipModes.includes(resolvedOptions.leadership))
+    throw new TypeError('leadership must be "follower-preferred", "follower-only", or "leader-only".')
   if (!Number.isSafeInteger(resolvedOptions.commandHistoryLimit) || resolvedOptions.commandHistoryLimit < 1)
     throw new RangeError('commandHistoryLimit must be a positive safe integer.')
   if (!Number.isSafeInteger(resolvedOptions.participantHeartbeatInterval) || resolvedOptions.participantHeartbeatInterval < 1)
@@ -112,8 +117,10 @@ export function createSyncedPiniaPlugin(
   const leadershipListeners = new Set<(isLeader: boolean) => void>()
   const pendingCalls = new Set<PendingCall>()
   let disposed = false
+  let hasReceivedCommittedState = false
   let leaderId: string | undefined
   let ownerPinia: Pinia | undefined
+  let stopWaitingForCommittedState = noop
 
   function notifyCoordinationChange() {
     const coordination = { leaderId, participantCount: participantLastSeen.size }
@@ -194,6 +201,21 @@ export function createSyncedPiniaPlugin(
     }
   }
 
+  /**
+   * Executes a routed action in the elected leader.
+   *
+   * Triggering workflow:
+   *
+   * {@link Tab.call}
+   *   -> `invokeAction`
+   *     -> {@link executeAction}
+   *
+   * Upstream:
+   * - {@link leaderApi}
+   *
+   * Downstream:
+   * - {@link commitState}
+   */
   async function executeAction(command: ActionCommand) {
     const recorded = normalizeDomainState(tab.getState()).operations.find(operation => operation.id === command.operationId)
     if (recorded) {
@@ -267,10 +289,26 @@ export function createSyncedPiniaPlugin(
     replaceState,
   }
 
+  /**
+   * Applies a committed domain snapshot received from tab-election.
+   *
+   * Triggering workflow:
+   *
+   * {@link Tab}
+   *   -> `state`
+   *     -> {@link handleState}
+   *
+   * Upstream:
+   * - {@link Tab.addEventListener}
+   *
+   * Downstream:
+   * - {@link applyDomainState}
+   */
   const handleState = (event: Event) => {
     if (!(event instanceof MessageEvent))
       return
 
+    hasReceivedCommittedState = true
     applyDomainState(event.data)
   }
 
@@ -365,13 +403,100 @@ export function createSyncedPiniaPlugin(
   tab.addEventListener('message', handleCoordinationMessage)
   tab.addEventListener('leadershipchange', handleLeadershipChange)
 
-  tab.waitForLeadership(() => {
+  /**
+   * Restores the latest domain snapshot and exposes the leader-owned API.
+   *
+   * Triggering workflow:
+   *
+   * {@link Tab.waitForLeadership}
+   *   -> `leadership acquired`
+   *     -> {@link assumeLeadership}
+   *
+   * Upstream:
+   * - {@link participateInElection}
+   *
+   * Downstream:
+   * - {@link applyDomainState}
+   */
+  const assumeLeadership = () => {
     applyDomainState(tab.getState())
     return leaderApi
-  }).catch((error) => {
+  }
+
+  function reportError(error: unknown) {
     console.error(`[${resolvedOptions.namespace}]`, error)
     resolvedOptions.onError(error)
-  })
+  }
+
+  function waitForCommittedState() {
+    if (hasReceivedCommittedState)
+      return Promise.resolve(true)
+
+    return new Promise<boolean>((resolve, reject) => {
+      let handleStateReceived: () => void
+      let timeout: ReturnType<typeof setTimeout>
+
+      const settle = (callback: () => void) => {
+        clearTimeout(timeout)
+        tab.removeEventListener('state', handleStateReceived)
+        stopWaitingForCommittedState = noop
+        callback()
+      }
+
+      handleStateReceived = () => settle(() => resolve(true))
+      timeout = setTimeout(() => {
+        settle(() => reject(new Error('leader-only takeover timed out before receiving committed state.')))
+      }, resolvedOptions.callTimeout)
+
+      stopWaitingForCommittedState = () => settle(() => resolve(false))
+      tab.addEventListener('state', handleStateReceived)
+
+      if (hasReceivedCommittedState)
+        handleStateReceived()
+    })
+  }
+
+  async function participateInElection() {
+    let steal = false
+    if (resolvedOptions.leadership === 'leader-only') {
+      const hasLeader = await tab.hasLeader()
+      if (disposed)
+        return
+
+      if (hasLeader && !tab.isLeader) {
+        try {
+          if (!await waitForCommittedState())
+            return
+          steal = true
+        }
+        catch (error) {
+          reportError(error)
+        }
+      }
+      else {
+        steal = true
+      }
+    }
+
+    for (;;) {
+      if (disposed)
+        return
+
+      try {
+        await tab.waitForLeadership(assumeLeadership, steal ? { steal: true } : undefined)
+      }
+      catch (error) {
+        if (!(error instanceof DOMException) || error.name !== 'AbortError') {
+          reportError(error)
+          return
+        }
+      }
+      steal = false
+    }
+  }
+
+  if (resolvedOptions.leadership !== 'follower-only')
+    void participateInElection()
 
   tab.send({ participantId: tab.id, type: 'participant-hello' } satisfies CoordinationMessage)
   const heartbeatTimer = setInterval(() => {
@@ -571,6 +696,7 @@ export function createSyncedPiniaPlugin(
         return
 
       disposed = true
+      stopWaitingForCommittedState()
 
       tab.send({ participantId: tab.id, type: 'participant-leave' } satisfies CoordinationMessage)
       clearInterval(heartbeatTimer)
