@@ -1,5 +1,9 @@
 import type { StateTree, StoreActions } from 'pinia'
 
+export const leadershipModes = ['follower-preferred', 'follower-only', 'leader-only'] as const
+
+export type LeadershipMode = typeof leadershipModes[number]
+
 export interface SyncedOptions {
   /** Timeout for an action or state RPC to the elected leader, in milliseconds. @default 30000 */
   callTimeout?: number
@@ -7,6 +11,8 @@ export interface SyncedOptions {
   commandHistoryLimit?: number
   /** Converts a received value back into a Pinia state tree. */
   deserialize?: (state: unknown) => StateTree
+  /** Determines how this runtime participates in leadership. @default follower-preferred */
+  leadership?: LeadershipMode
   /** Unique same-origin synchronization and leader-election domain. @default pinia-plugin-synced */
   namespace?: string
   /** Receives background transport, serialization, and state application failures. */

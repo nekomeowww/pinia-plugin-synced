@@ -1,5 +1,7 @@
 import type { BrowserContext, Frame, Page, TestInfo } from '@playwright/test'
 
+import type { LeadershipMode } from '../../src/types'
+
 import { expect } from '@playwright/test'
 
 export interface Peer<Surface extends PeerSurface = PeerSurface> {
@@ -47,10 +49,13 @@ export async function openFramePeer(host: Page, name: string, url: string, error
   return { errors, surface: frame }
 }
 
-export async function openPagePeer(context: BrowserContext): Promise<Peer<Page>> {
+export async function openPagePeer(context: BrowserContext, leadership?: LeadershipMode): Promise<Peer<Page>> {
   const page = await context.newPage()
   const errors = trackErrors(page)
-  await page.goto('/?embed=false')
+  const url = new URL('/?embed=false', 'http://localhost')
+  if (leadership)
+    url.searchParams.set('leadership', leadership)
+  await page.goto(`${url.pathname}${url.search}`)
   await expect(page.locator('.leadership-role')).toBeVisible()
   return { errors, surface: page }
 }

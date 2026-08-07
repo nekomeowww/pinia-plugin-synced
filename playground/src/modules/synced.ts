@@ -1,7 +1,12 @@
+import type { LeadershipMode } from 'pinia-plugin-synced'
+
 import { createSyncedPiniaPlugin } from 'pinia-plugin-synced'
 import { computed, shallowRef } from 'vue'
 
+const leadership = new URLSearchParams(window.location.search).get('leadership') as LeadershipMode | null
+
 export const synced = createSyncedPiniaPlugin({
+  leadership: leadership ?? 'follower-preferred',
   namespace: 'pinia-plugin-synced:playground',
 })
 export const participantId = synced.participantId

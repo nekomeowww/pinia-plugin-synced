@@ -22,6 +22,11 @@ import { ref } from 'vue'
 
 const pinia = createPinia()
 const synced = createSyncedPiniaPlugin({
+  // You can use leadership to control and specify the role / behavior of the runtime.
+  // By default it's `follower-preferred`, which means no stealing, no takeover, if no leader is present, it will be leader
+  // Or otherwise, `leader-only` to take leadership once when the runtime joins, or `follower-only` to never become leader.
+  //
+  // leadership: 'follower-preferred', <- if not specified, defaults to 'follower-preferred'
   namespace: 'my-app:messages',
 })
 
@@ -45,6 +50,22 @@ export const useMessagesStore = defineStore('messages', () => {
 ```
 
 Calling `send()` in any context returns a Promise and executes the action in the elected leader. Direct mutations and `$patch()` calls are sent to the leader as full-state proposals.
+
+### Leadership modes
+
+`leadership` option controls which role the runtime takes when joins.
+
+| Mode | Behavior |
+| --- | --- |
+| `follower-preferred` | Default. If a leader is present, it follows. If no leader is present, it becomes the leader. |
+| `follower-only` | Never becomes leader. If no leader would ever be present, this runtime remains a follower and does not take leadership. |
+| `leader-only` | Becomes leader once when joins. If a leader is already present, it remains a follower and does not take leadership. |
+
+> [!WARNING]
+>
+> `leader-only` takeover is a best-effort failover, not a transactional handoff: it does not cancel actions or external side effects already executing in the previous leader. If the current committed state cannot be received within `callTimeout`, the runtime reports the error through `onError`, remains a follower, and does not retry the forced takeover.
+
+### Resource cleanup
 
 Dispose the runtime when its owning page or window ends:
 
