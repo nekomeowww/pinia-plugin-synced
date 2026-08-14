@@ -7,6 +7,7 @@ export default defineConfig({
   use: {
     baseURL: 'http://127.0.0.1:43017',
     browserName: 'chromium',
+    headless: true,
     trace: 'retain-on-failure',
   },
   webServer: {
