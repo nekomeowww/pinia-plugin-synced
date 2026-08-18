@@ -2,7 +2,7 @@ import type { DomainState } from '../../src/protocol'
 
 import { createPinia, defineStore, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { createApp, shallowRef } from 'vue'
+import { createApp, isReactive, reactive, ref, shallowRef } from 'vue'
 
 import { createSyncedPiniaPlugin } from '../../src'
 
@@ -67,6 +67,19 @@ function createCardsStore() {
   })
 }
 
+function createProviderRuntimeStore() {
+  return defineStore('provider-state', () => {
+    const runtime = ref<Record<string, { models: Array<{ id: string }> }>>({})
+    runtime.value['official-provider'] = reactive({
+      models: reactive([{ id: 'default-model' }]),
+    })
+
+    return { runtime }
+  }, {
+    synced: { state: true },
+  })
+}
+
 function emptyDomainState(): DomainState {
   return {
     operations: [],
@@ -105,6 +118,32 @@ describe('pinia state snapshots', () => {
       expect(snapshot.cards).toBeInstanceOf(Map)
       expect(snapshot.cards.size).toBe(1)
       expect(snapshot.cards.get('default')).toBe('Default card')
+    }
+    finally {
+      synced.dispose()
+    }
+  })
+
+  it('serializes nested Vue reactive values in the leader snapshot', () => {
+    tabScenario.MockTab.isLeader = true
+    const synced = createSyncedPiniaPlugin({ namespace: 'unit:serialize-nested-reactive' })
+
+    try {
+      const pinia = createPinia()
+      pinia.use(synced.plugin)
+      createApp({}).use(pinia)
+      setActivePinia(pinia)
+      createProviderRuntimeStore()()
+
+      const tab = tabScenario.MockTab.instances[0]!
+      const state = tab.getState() as DomainState
+      const snapshot = state.stores['provider-state'] as {
+        runtime: Record<string, { models: Array<{ id: string }> }>
+      }
+
+      expect(snapshot.runtime['official-provider']?.models).toEqual([{ id: 'default-model' }])
+      expect(isReactive(snapshot.runtime['official-provider'])).toBe(false)
+      expect(isReactive(snapshot.runtime['official-provider']?.models)).toBe(false)
     }
     finally {
       synced.dispose()

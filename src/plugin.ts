@@ -39,6 +39,13 @@ interface StoreRegistration {
   store: StoreGeneric
 }
 
+function canBeStructuredCloned(value: object) {
+  return value instanceof Date
+    || value instanceof RegExp
+    || value instanceof ArrayBuffer
+    || ArrayBuffer.isView(value)
+}
+
 function deserializeState(state: unknown): StateTree {
   if (!state || typeof state !== 'object' || Array.isArray(state))
     throw new TypeError('A synchronized Pinia state must deserialize to an object.')
@@ -48,11 +55,64 @@ function deserializeState(state: unknown): StateTree {
 
 /**
  * Creates a transport snapshot without losing structured values such as Map,
- * Set, and Date. Vue reactive proxies must be unwrapped before cloning.
+ * Set, and Date. Vue reactive proxies must be unwrapped recursively before
+ * cloning because a raw parent can still contain proxy-valued properties.
  */
 function serializeState(state: StateTree): StateTree {
-  const stateEntries = Object.keys(state).map(key => [key, toRaw(state[key])] as const)
+  const stateEntries = Object.keys(state).map(key => [key, unwrapReactiveValue(state[key])] as const)
   return structuredClone(Object.fromEntries(stateEntries))
+}
+
+function unwrapReactiveValue<T>(value: T, seen = new WeakMap<object, unknown>()): T {
+  const rawValue = toRaw(value)
+  if (rawValue === null || typeof rawValue !== 'object')
+    return rawValue
+
+  if (seen.has(rawValue))
+    return seen.get(rawValue) as T
+
+  if (canBeStructuredCloned(rawValue))
+    return rawValue
+
+  if (rawValue instanceof Map) {
+    const clone = new Map<unknown, unknown>()
+    seen.set(rawValue, clone)
+
+    for (const [key, entry] of rawValue)
+      clone.set(unwrapReactiveValue(key, seen), unwrapReactiveValue(entry, seen))
+
+    return clone as T
+  }
+
+  if (rawValue instanceof Set) {
+    const clone = new Set<unknown>()
+    seen.set(rawValue, clone)
+
+    for (const entry of rawValue)
+      clone.add(unwrapReactiveValue(entry, seen))
+
+    return clone as T
+  }
+
+  if (Array.isArray(rawValue)) {
+    const clone = new Array<unknown>(rawValue.length) as Record<string, unknown> & unknown[]
+    seen.set(rawValue, clone)
+
+    const source = rawValue as Record<string, unknown>
+    for (const key of Object.keys(source))
+      clone[key] = unwrapReactiveValue(source[key], seen)
+
+    return clone as T
+  }
+
+  const clone = Object.create(Object.getPrototypeOf(rawValue)) as Record<string, unknown>
+  seen.set(rawValue, clone)
+
+  const source = rawValue as Record<string, unknown>
+  for (const key of Object.keys(source))
+    clone[key] = unwrapReactiveValue(source[key], seen)
+
+  return clone as T
 }
 
 /** Runtime defaults applied before validating and starting the synchronization domain. */
