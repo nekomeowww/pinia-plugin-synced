@@ -39,22 +39,33 @@ interface StoreRegistration {
   store: StoreGeneric
 }
 
+function deserializeState(state: unknown): StateTree {
+  if (!state || typeof state !== 'object' || Array.isArray(state))
+    throw new TypeError('A synchronized Pinia state must deserialize to an object.')
+
+  return structuredClone(state) as StateTree
+}
+
+/**
+ * Creates a transport snapshot without losing structured values such as Map,
+ * Set, and Date. Vue reactive proxies must be unwrapped before cloning.
+ */
+function serializeState(state: StateTree): StateTree {
+  const stateEntries = Object.keys(state).map(key => [key, toRaw(state[key])] as const)
+  return structuredClone(Object.fromEntries(stateEntries))
+}
+
 /** Runtime defaults applied before validating and starting the synchronization domain. */
 const defaultOptions: ResolvedSyncedPiniaPluginOptions = {
   callTimeout: 30_000,
   commandHistoryLimit: 128,
-  deserialize(state): StateTree {
-    if (!state || typeof state !== 'object' || Array.isArray(state))
-      throw new TypeError('A synchronized Pinia state must deserialize to an object.')
-
-    return state as StateTree
-  },
+  deserialize: deserializeState,
   leadership: 'follower-preferred',
   namespace: 'pinia-plugin-synced',
   onError: noop,
   participantHeartbeatInterval: 15_000,
   participantTimeout: 120_000,
-  serialize: state => JSON.parse(JSON.stringify(state)) as unknown,
+  serialize: serializeState,
 }
 
 /** Coordination information observed by one synchronization runtime. */

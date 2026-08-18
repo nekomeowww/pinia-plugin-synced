@@ -9,7 +9,7 @@ export interface SyncedOptions {
   callTimeout?: number
   /** Recent completed actions retained after the RPC timeout window; unexpired actions can exceed this limit. @default 128 */
   commandHistoryLimit?: number
-  /** Converts a received value back into a Pinia state tree. */
+  /** Converts a received value back into a Pinia state tree. Defaults to structuredClone after validating the state shape. */
   deserialize?: (state: unknown) => StateTree
   /** Determines how this runtime participates in leadership. @default follower-preferred */
   leadership?: LeadershipMode
@@ -21,7 +21,7 @@ export interface SyncedOptions {
   participantHeartbeatInterval?: number
   /** Time without a presence announcement before a participant expires, in milliseconds. @default 120000 */
   participantTimeout?: number
-  /** Converts reactive Pinia state into a structured-clone-compatible value. */
+  /** Converts reactive Pinia state into a structured-clone-compatible value. Defaults to structuredClone after unwrapping Vue reactivity. */
   serialize?: (state: StateTree) => unknown
 }
 

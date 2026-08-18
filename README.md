@@ -76,8 +76,8 @@ synced.dispose()
 ## Constraints
 
 - Everything should be `async`: Synchronized actions are asynchronous.
-- Everything uses JSON by default, but custom `serialize` and `deserialize` functions can replace it.
-- Everything returned should support `structuredClone`: Arguments and return values must support structured cloning.
+- State snapshots use `structuredClone` by default, so values such as `Map`, `Set`, and `Date` keep their types across contexts. Custom `serialize` and `deserialize` functions can replace the default when an application needs another state format.
+- Serialized state, action arguments, and action results must support `structuredClone` because the transport uses structured cloning.
 - We do not offer CRDT merging: direct state proposals use last-arriving-wins semantics. This package does not provide CRDT merging.
 - We do not guarantee application-level idempotency: action RPCs stay deduplicated for the full RPC timeout, but external side effects still need idempotency keys.
 - We do not persist data: synced plugin is not [`pinia-plugin-persistedstate`], all states will be lost once every tabs/windows/iframes closes. If you need persistence, use it with another plugin.

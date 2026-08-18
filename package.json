@@ -31,7 +31,9 @@
     "dev": "pnpm --dir playground dev",
     "lint": "eslint --cache .",
     "lint:fix": "eslint --cache . --fix",
-    "test": "playwright test",
+    "test": "pnpm test:unit && pnpm test:browser",
+    "test:browser": "playwright test",
+    "test:unit": "vitest run",
     "typecheck": "tsc --noEmit && pnpm --dir playground typecheck"
   },
   "peerDependencies": {
@@ -58,6 +60,7 @@
     "tsdown": "catalog:",
     "typescript": "catalog:",
     "vite": "catalog:",
+    "vitest": "catalog:",
     "vue": "catalog:",
     "vue-tsc": "catalog:"
   }
