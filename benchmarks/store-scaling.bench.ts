@@ -85,14 +85,20 @@ function createScenario(storeCount: number, recordsPerStore: number) {
         return count.value
       }
 
+      async function incrementMany(times: number) {
+        for (let index = 0; index < times; index += 1)
+          count.value += 1
+        return count.value
+      }
+
       async function noChange() {
         return count.value
       }
 
-      return { count, increment, noChange, records }
+      return { count, increment, incrementMany, noChange, records }
     }, {
       synced: {
-        actions: ['increment', 'noChange'],
+        actions: ['increment', 'incrementMany', 'noChange'],
         state: true,
       },
     })
@@ -122,6 +128,10 @@ describe('routed action scaling (100 records per store, one cloned delivery)', (
     }, { time: 750, warmupTime: 100 })
 
     if (storeCount === 10) {
+      bench('10 stores: action with 100 mutations in one store', async () => {
+        await store.incrementMany(100)
+      }, { time: 750, warmupTime: 100 })
+
       bench('10 stores: concurrent mutating action in every store', async () => {
         await Promise.all(stores.map(item => item.increment()))
       }, { time: 1500, warmupTime: 100 })

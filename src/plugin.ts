@@ -188,8 +188,10 @@ export function createSyncedPiniaPlugin(
     throw new RangeError('participantTimeout must be a safe integer greater than participantHeartbeatInterval.')
 
   const tab = new Tab<DomainState>(resolvedOptions.namespace, { callTimeout: resolvedOptions.callTimeout })
+  const commitChannel = new MessageChannel()
   const registrations = new Map<string, StoreRegistration>()
   const inFlightActions = new Map<string, Promise<unknown>>()
+  const pendingDirtyStoreIds = new Set<string>()
   const pendingOperations = new Map<string, OperationRecord>()
   const pendingStoreStates = new Map<string, unknown>()
   const coordinationListeners = new Set<(coordination: SyncedPiniaCoordination) => void>()
@@ -251,9 +253,9 @@ export function createSyncedPiniaPlugin(
    *
    * Triggering workflow:
    *
-   * {@link queueStoreCommit}
+   * {@link queueDirtyStore}
    *   -> {@link scheduleCommit}
-   *     -> `microtask`
+   *     -> `MessagePort.message`
    *       -> {@link flushPendingCommit}
    *
    * Upstream:
@@ -262,7 +264,7 @@ export function createSyncedPiniaPlugin(
    * Downstream:
    * - {@link publishCommit}
    */
-  function flushPendingCommit() {
+  async function flushPendingCommit() {
     const commit = pendingCommit
     if (!commit)
       return
@@ -270,11 +272,24 @@ export function createSyncedPiniaPlugin(
     pendingCommit = undefined
     const operations = [...pendingOperations.values()]
     const storeStates = new Map(pendingStoreStates)
+    const dirtyStoreIds = [...pendingDirtyStoreIds]
+    pendingDirtyStoreIds.clear()
     pendingOperations.clear()
     pendingStoreStates.clear()
 
     try {
-      publishCommit(storeStates, operations)
+      for (const storeId of dirtyStoreIds) {
+        const registration = registrations.get(storeId)
+        if (registration?.active)
+          storeStates.set(storeId, resolvedOptions.serialize(registration.store.$state))
+      }
+
+      if (tab.isLeader) {
+        publishCommit(storeStates, operations)
+      }
+      else {
+        await Promise.all([...storeStates].map(([storeId, state]) => invokeLeader('replaceState', { state, storeId })))
+      }
       commit.resolve()
     }
     catch (error) {
@@ -293,19 +308,37 @@ export function createSyncedPiniaPlugin(
       resolve = resolvePromise
     })
     pendingCommit = { promise, reject, resolve }
-    queueMicrotask(flushPendingCommit)
+    commitChannel.port2.postMessage(undefined)
     return promise
   }
 
   function queueOperationCommit(operation: OperationRecord) {
+    if (disposed)
+      return Promise.resolve()
+
     pendingOperations.set(operation.id, operation)
     return scheduleCommit()
   }
 
   function queueStoreCommit(storeId: string, state: unknown) {
+    if (disposed)
+      return Promise.resolve()
+
     pendingStoreStates.set(storeId, state)
     return scheduleCommit()
   }
+
+  function queueDirtyStore(storeId: string) {
+    if (disposed)
+      return
+
+    const commitAlreadyScheduled = Boolean(pendingCommit)
+    pendingDirtyStoreIds.add(storeId)
+    if (!commitAlreadyScheduled)
+      return scheduleCommit()
+  }
+
+  commitChannel.port1.onmessage = flushPendingCommit
 
   function applyStoreState(registration: StoreRegistration, serializedState: unknown) {
     let state: StateTree
@@ -331,7 +364,11 @@ export function createSyncedPiniaPlugin(
       })
     }
     finally {
-      registration.applyingState -= 1
+      // The subscription flushes in Vue's next microtask. Keep the guard active
+      // until its callback has observed this remotely applied patch.
+      queueMicrotask(() => {
+        registration.applyingState -= 1
+      })
     }
   }
 
@@ -766,7 +803,7 @@ export function createSyncedPiniaPlugin(
 
     if (storeOptions.state) {
       /**
-       * Queues the latest serialized state after one local store mutation.
+       * Marks a locally mutated store for serialization in the next commit task.
        *
        * Triggering workflow:
        *
@@ -779,39 +816,21 @@ export function createSyncedPiniaPlugin(
        * - {@link StoreGeneric.$subscribe}
        *
        * Downstream:
-       * - {@link queueStoreCommit}
-       * - {@link invokeLeader}
+       * - {@link queueDirtyStore}
        */
-      const handleStoreMutation: Parameters<typeof store.$subscribe>[0] = (_mutation, state) => {
+      const handleStoreMutation: Parameters<typeof store.$subscribe>[0] = () => {
         if (!registration.active || registration.applyingState > 0)
           return
 
-        let serializedState: unknown
-        try {
-          serializedState = resolvedOptions.serialize(state)
-        }
-        catch (error) {
+        void queueDirtyStore(store.$id)?.catch((error) => {
           console.error(`[${resolvedOptions.namespace}]`, error)
           resolvedOptions.onError(error)
-          return
-        }
-
-        if (tab.isLeader) {
-          void queueStoreCommit(store.$id, serializedState).catch(reportError)
-          return
-        }
-
-        invokeLeader('replaceState', {
-          state: serializedState,
-          storeId: store.$id,
-        }).catch((error) => {
-          console.error(`[${resolvedOptions.namespace}]`, error)
-          resolvedOptions.onError(error)
-          applyDomainState(tab.getState())
+          if (!tab.isLeader)
+            applyDomainState(tab.getState())
         })
       }
 
-      registration.stopSubscription = store.$subscribe(handleStoreMutation, { flush: 'sync' })
+      registration.stopSubscription = store.$subscribe(handleStoreMutation, { flush: 'pre' })
     }
 
     onScopeDispose(() => unregisterStore(registration))
@@ -875,6 +894,14 @@ export function createSyncedPiniaPlugin(
       coordinationListeners.clear()
       leadershipListeners.clear()
       inFlightActions.clear()
+      pendingDirtyStoreIds.clear()
+      pendingOperations.clear()
+      pendingStoreStates.clear()
+      pendingCommit?.resolve()
+      pendingCommit = undefined
+      commitChannel.port1.onmessage = null
+      commitChannel.port1.close()
+      commitChannel.port2.close()
 
       const disposalError = new Error('Pinia sync runtime was disposed before the RPC completed.')
 

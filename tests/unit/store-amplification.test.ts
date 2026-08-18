@@ -91,15 +91,22 @@ function createScenario(storeCount: number) {
         return count.value
       }
 
+      async function incrementMany(times: number) {
+        stats.actionBodies += 1
+        for (let index = 0; index < times; index += 1)
+          count.value += 1
+        return count.value
+      }
+
       async function noChange() {
         stats.actionBodies += 1
         return count.value
       }
 
-      return { count, increment, noChange }
+      return { count, increment, incrementMany, noChange }
     }, {
       synced: {
-        actions: ['increment', 'noChange'],
+        actions: ['increment', 'incrementMany', 'noChange'],
         state: true,
       },
     })
@@ -148,7 +155,7 @@ describe('multi-store action amplification', () => {
       await scenario.stores[0]!.increment()
 
       expect(scenario.stats.actionBodies).toBe(1)
-      expect(scenario.tab.setStateCount).toBe(2)
+      expect(scenario.tab.setStateCount).toBe(1)
       expect(scenario.stats.appliedStorePatches).toBe(0)
       expect(scenario.stats.serializedStores).toBe(1)
     }
@@ -164,9 +171,25 @@ describe('multi-store action amplification', () => {
       await Promise.all(scenario.stores.map(store => store.increment()))
 
       expect(scenario.stats.actionBodies).toBe(10)
-      expect(scenario.tab.setStateCount).toBe(2)
+      expect(scenario.tab.setStateCount).toBe(1)
       expect(scenario.stats.appliedStorePatches).toBe(0)
       expect(scenario.stats.serializedStores).toBe(10)
+    }
+    finally {
+      scenario.synced.dispose()
+    }
+  })
+
+  it('serializes the final store state once after a burst of mutations', async () => {
+    const scenario = createScenario(10)
+
+    try {
+      await scenario.stores[0]!.incrementMany(100)
+
+      expect(scenario.stats.actionBodies).toBe(1)
+      expect(scenario.tab.setStateCount).toBe(1)
+      expect(scenario.stats.appliedStorePatches).toBe(0)
+      expect(scenario.stats.serializedStores).toBe(1)
     }
     finally {
       scenario.synced.dispose()
