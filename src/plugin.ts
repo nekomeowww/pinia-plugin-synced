@@ -16,12 +16,18 @@ interface HotStoreBoundary {
 
 interface LeaderApi {
   invokeAction: (command: ActionCommand) => Promise<unknown>
-  publishInitialState: (command: StateCommand) => void
-  replaceState: (command: StateCommand) => void
+  publishInitialState: (command: StateCommand) => Promise<void>
+  replaceState: (command: StateCommand) => Promise<void>
 }
 
 interface PendingCall {
   reject: (error: Error) => void
+}
+
+interface PendingCommit {
+  promise: Promise<void>
+  reject: (error: unknown) => void
+  resolve: () => void
 }
 
 type ResolvedSyncedPiniaPluginOptions = Required<SyncedOptions>
@@ -31,6 +37,7 @@ type StoreAction = (...args: unknown[]) => unknown
 interface StoreRegistration {
   actionWrappers: Map<string, StoreAction>
   active: boolean
+  appliedRevision?: number
   applyingState: number
   options: Required<SyncedStoreOptions>
   originalActions: Map<string, StoreAction>
@@ -183,6 +190,8 @@ export function createSyncedPiniaPlugin(
   const tab = new Tab<DomainState>(resolvedOptions.namespace, { callTimeout: resolvedOptions.callTimeout })
   const registrations = new Map<string, StoreRegistration>()
   const inFlightActions = new Map<string, Promise<unknown>>()
+  const pendingOperations = new Map<string, OperationRecord>()
+  const pendingStoreStates = new Map<string, unknown>()
   const coordinationListeners = new Set<(coordination: SyncedPiniaCoordination) => void>()
   const participantLastSeen = new Map([[tab.id, Date.now()]])
   const leadershipListeners = new Set<(isLeader: boolean) => void>()
@@ -191,6 +200,7 @@ export function createSyncedPiniaPlugin(
   let hasReceivedCommittedState = false
   let leaderId: string | undefined
   let ownerPinia: Pinia | undefined
+  let pendingCommit: PendingCommit | undefined
   let stopWaitingForCommittedState = noop
 
   function notifyCoordinationChange() {
@@ -199,38 +209,102 @@ export function createSyncedPiniaPlugin(
       listener(coordination)
   }
 
-  function snapshotRegisteredStores(base: DomainState['stores']) {
-    const stores = { ...base }
-    for (const registration of registrations.values()) {
-      if (!registration.active || !registration.options.state)
-        continue
-
-      stores[registration.store.$id] = resolvedOptions.serialize(registration.store.$state)
-    }
-
-    return stores
-  }
-
-  function commitState(operation?: OperationRecord) {
+  function publishCommit(storeStates: ReadonlyMap<string, unknown>, operations: readonly OperationRecord[]) {
     if (disposed || !tab.isLeader)
       return
 
     const current = normalizeDomainState(tab.getState())
-    const completedOperations = operation
-      ? [...current.operations.filter(item => item.id !== operation.id), operation]
-      : current.operations
+    const operationIds = new Set(operations.map(operation => operation.id))
+    const completedOperations = [
+      ...current.operations.filter(operation => !operationIds.has(operation.id)),
+      ...operations,
+    ]
 
     const historyStart = Math.max(0, completedOperations.length - resolvedOptions.commandHistoryLimit)
     // A caller can retry until its RPC timeout. Keep every result that a late retry can still reference.
     const retryWindowOpenedAt = Date.now() - resolvedOptions.callTimeout
     const retryWindowStart = completedOperations.findIndex(item => item.completedAt >= retryWindowOpenedAt)
     const retentionStart = retryWindowStart === -1 ? historyStart : Math.min(historyStart, retryWindowStart)
+    const storeRevisions = { ...current.storeRevisions }
+    const stores = { ...current.stores }
+
+    for (const [storeId, state] of storeStates) {
+      const storeRevision = (storeRevisions[storeId] ?? 0) + 1
+      storeRevisions[storeId] = storeRevision
+      stores[storeId] = state
+
+      const registration = registrations.get(storeId)
+      if (registration?.active)
+        registration.appliedRevision = storeRevision
+    }
 
     tab.setState({
       operations: completedOperations.slice(retentionStart),
       revision: current.revision + 1,
-      stores: snapshotRegisteredStores(current.stores),
+      storeRevisions,
+      stores,
     })
+  }
+
+  /**
+   * Flushes dirty stores and completed operations as one domain revision.
+   *
+   * Triggering workflow:
+   *
+   * {@link queueStoreCommit}
+   *   -> {@link scheduleCommit}
+   *     -> `microtask`
+   *       -> {@link flushPendingCommit}
+   *
+   * Upstream:
+   * - {@link scheduleCommit}
+   *
+   * Downstream:
+   * - {@link publishCommit}
+   */
+  function flushPendingCommit() {
+    const commit = pendingCommit
+    if (!commit)
+      return
+
+    pendingCommit = undefined
+    const operations = [...pendingOperations.values()]
+    const storeStates = new Map(pendingStoreStates)
+    pendingOperations.clear()
+    pendingStoreStates.clear()
+
+    try {
+      publishCommit(storeStates, operations)
+      commit.resolve()
+    }
+    catch (error) {
+      commit.reject(error)
+    }
+  }
+
+  function scheduleCommit() {
+    if (pendingCommit)
+      return pendingCommit.promise
+
+    let reject!: (error: unknown) => void
+    let resolve!: () => void
+    const promise = new Promise<void>((resolvePromise, rejectPromise) => {
+      reject = rejectPromise
+      resolve = resolvePromise
+    })
+    pendingCommit = { promise, reject, resolve }
+    queueMicrotask(flushPendingCommit)
+    return promise
+  }
+
+  function queueOperationCommit(operation: OperationRecord) {
+    pendingOperations.set(operation.id, operation)
+    return scheduleCommit()
+  }
+
+  function queueStoreCommit(storeId: string, state: unknown) {
+    pendingStoreStates.set(storeId, state)
+    return scheduleCommit()
   }
 
   function applyStoreState(registration: StoreRegistration, serializedState: unknown) {
@@ -267,8 +341,16 @@ export function createSyncedPiniaPlugin(
       if (!registration.options.state)
         continue
 
-      if (registration.store.$id in domainState.stores)
-        applyStoreState(registration, domainState.stores[registration.store.$id])
+      const storeId = registration.store.$id
+      if (!(storeId in domainState.stores))
+        continue
+
+      const storeRevision = domainState.storeRevisions[storeId] ?? domainState.revision
+      if (registration.appliedRevision === storeRevision)
+        continue
+
+      applyStoreState(registration, domainState.stores[storeId])
+      registration.appliedRevision = storeRevision
     }
   }
 
@@ -285,7 +367,7 @@ export function createSyncedPiniaPlugin(
    * - {@link leaderApi}
    *
    * Downstream:
-   * - {@link commitState}
+   * - {@link queueOperationCommit}
    */
   async function executeAction(command: ActionCommand) {
     const recorded = normalizeDomainState(tab.getState()).operations.find(operation => operation.id === command.operationId)
@@ -310,14 +392,14 @@ export function createSyncedPiniaPlugin(
     const execution = Promise.resolve()
       .then(() => action.apply(registration.store, command.args))
       .then(
-        (result) => {
+        async (result) => {
           const clonedResult = structuredClone(result)
-          commitState({ completedAt: Date.now(), id: command.operationId, outcome: 'fulfilled', result: clonedResult })
+          await queueOperationCommit({ completedAt: Date.now(), id: command.operationId, outcome: 'fulfilled', result: clonedResult })
           return clonedResult
         },
-        (error: unknown) => {
+        async (error: unknown) => {
           const operationError = toError(error)
-          commitState({ completedAt: Date.now(), error: { message: operationError.message, name: operationError.name }, id: command.operationId, outcome: 'rejected' })
+          await queueOperationCommit({ completedAt: Date.now(), error: { message: operationError.message, name: operationError.name }, id: command.operationId, outcome: 'rejected' })
           throw operationError
         },
       )
@@ -332,13 +414,9 @@ export function createSyncedPiniaPlugin(
   function publishInitialState(command: StateCommand) {
     const current = normalizeDomainState(tab.getState())
     if (command.storeId in current.stores)
-      return
+      return Promise.resolve()
 
-    tab.setState({
-      ...current,
-      revision: current.revision + 1,
-      stores: { ...current.stores, [command.storeId]: command.state },
-    })
+    return queueStoreCommit(command.storeId, command.state)
   }
 
   function replaceState(command: StateCommand) {
@@ -346,12 +424,7 @@ export function createSyncedPiniaPlugin(
     if (registration?.active)
       applyStoreState(registration, command.state)
 
-    const current = normalizeDomainState(tab.getState())
-    tab.setState({
-      ...current,
-      revision: current.revision + 1,
-      stores: { ...snapshotRegisteredStores(current.stores), [command.storeId]: command.state },
-    })
+    return queueStoreCommit(command.storeId, command.state)
   }
 
   const leaderApi: LeaderApi = {
@@ -670,9 +743,10 @@ export function createSyncedPiniaPlugin(
     const domainState = normalizeDomainState(tab.getState())
     if (store.$id in domainState.stores) {
       applyStoreState(registration, domainState.stores[store.$id])
+      registration.appliedRevision = domainState.storeRevisions[store.$id] ?? domainState.revision
     }
     else if (tab.isLeader) {
-      commitState()
+      publishCommit(new Map([[store.$id, resolvedOptions.serialize(store.$state)]]), [])
     }
     else {
       try {
@@ -691,7 +765,24 @@ export function createSyncedPiniaPlugin(
     }
 
     if (storeOptions.state) {
-      registration.stopSubscription = store.$subscribe((_mutation, state) => {
+      /**
+       * Queues the latest serialized state after one local store mutation.
+       *
+       * Triggering workflow:
+       *
+       * {@link registerStore}
+       *   -> {@link StoreGeneric.$subscribe}
+       *     -> `store mutation`
+       *       -> {@link handleStoreMutation}
+       *
+       * Upstream:
+       * - {@link StoreGeneric.$subscribe}
+       *
+       * Downstream:
+       * - {@link queueStoreCommit}
+       * - {@link invokeLeader}
+       */
+      const handleStoreMutation: Parameters<typeof store.$subscribe>[0] = (_mutation, state) => {
         if (!registration.active || registration.applyingState > 0)
           return
 
@@ -706,7 +797,7 @@ export function createSyncedPiniaPlugin(
         }
 
         if (tab.isLeader) {
-          commitState()
+          void queueStoreCommit(store.$id, serializedState).catch(reportError)
           return
         }
 
@@ -718,7 +809,9 @@ export function createSyncedPiniaPlugin(
           resolvedOptions.onError(error)
           applyDomainState(tab.getState())
         })
-      }, { flush: 'sync' })
+      }
+
+      registration.stopSubscription = store.$subscribe(handleStoreMutation, { flush: 'sync' })
     }
 
     onScopeDispose(() => unregisterStore(registration))
@@ -819,16 +912,29 @@ export function createSyncedPiniaPlugin(
 
 function normalizeDomainState(state: unknown): DomainState {
   if (!state || typeof state !== 'object' || Array.isArray(state))
-    return { operations: [], revision: 0, stores: {} }
+    return { operations: [], revision: 0, storeRevisions: {}, stores: {} }
 
   const value = state as Partial<DomainState>
+  const revision = Number.isSafeInteger(value.revision) && (value.revision ?? 0) >= 0
+    ? value.revision ?? 0
+    : 0
+  const stores = value.stores && typeof value.stores === 'object' && !Array.isArray(value.stores)
+    ? value.stores
+    : {}
+  const storeRevisions = value.storeRevisions && typeof value.storeRevisions === 'object' && !Array.isArray(value.storeRevisions)
+    ? { ...value.storeRevisions }
+    : {}
+
+  for (const storeId of Object.keys(stores)) {
+    const storeRevision = storeRevisions[storeId]
+    if (!Number.isSafeInteger(storeRevision) || (storeRevision ?? -1) < 0)
+      storeRevisions[storeId] = revision
+  }
+
   return {
     operations: Array.isArray(value.operations) ? value.operations : [],
-    revision: Number.isSafeInteger(value.revision) && (value.revision ?? 0) >= 0
-      ? value.revision ?? 0
-      : 0,
-    stores: value.stores && typeof value.stores === 'object' && !Array.isArray(value.stores)
-      ? value.stores
-      : {},
+    revision,
+    storeRevisions,
+    stores,
   }
 }

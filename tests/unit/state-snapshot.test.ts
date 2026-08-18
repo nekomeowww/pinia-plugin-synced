@@ -84,6 +84,7 @@ function emptyDomainState(): DomainState {
   return {
     operations: [],
     revision: 0,
+    storeRevisions: {},
     stores: {},
   }
 }
@@ -171,6 +172,32 @@ describe('pinia state snapshots', () => {
       expect(store.cards).toBeInstanceOf(Map)
       expect(store.cards.size).toBe(1)
       expect(store.cards.get('remote')).toBe('Remote card')
+    }
+    finally {
+      synced.dispose()
+    }
+  })
+
+  it('hydrates a legacy snapshot without per-store revisions', () => {
+    tabScenario.MockTab.initialState = {
+      operations: [],
+      revision: 7,
+      stores: {
+        cards: {
+          cards: new Map([['legacy', 'Legacy card']]),
+        },
+      },
+    }
+    const synced = createSyncedPiniaPlugin({ namespace: 'unit:deserialize-legacy-snapshot' })
+
+    try {
+      const pinia = createPinia()
+      pinia.use(synced.plugin)
+      createApp({}).use(pinia)
+      setActivePinia(pinia)
+      const store = createCardsStore()()
+
+      expect(store.cards.get('legacy')).toBe('Legacy card')
     }
     finally {
       synced.dispose()

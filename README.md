@@ -76,6 +76,7 @@ synced.dispose()
 ## Constraints
 
 - Everything should be `async`: Synchronized actions are asynchronous.
+- State changes and completed action records queued in the same microtask are committed together. Per-store revisions prevent an unchanged store from being patched again when another store or only the action history changed.
 - State snapshots use `structuredClone` by default, so values such as `Map`, `Set`, and `Date` keep their types across contexts. Custom `serialize` and `deserialize` functions can replace the default when an application needs another state format.
 - Serialized state, action arguments, and action results must support `structuredClone` because the transport uses structured cloning.
 - We do not offer CRDT merging: direct state proposals use last-arriving-wins semantics. This package does not provide CRDT merging.

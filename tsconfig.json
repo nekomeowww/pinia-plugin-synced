@@ -10,6 +10,7 @@
     "skipLibCheck": true
   },
   "include": [
+    "benchmarks/**/*.ts",
     "src/**/*.ts",
     "tests/**/*.ts",
     "playwright.config.ts",

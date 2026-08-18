@@ -20,6 +20,7 @@ export type CoordinationMessage
 export interface DomainState {
   operations: OperationRecord[]
   revision: number
+  storeRevisions: Record<string, number>
   stores: Record<string, unknown>
 }
 
