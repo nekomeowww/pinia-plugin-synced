@@ -1,7 +1,7 @@
 {
   "name": "pinia-plugin-synced",
   "type": "module",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "packageManager": "pnpm@11.18.0",
   "description": "Synchronize explicitly opted-in Pinia stores and actions across same-origin tabs.",
   "license": "MIT",
