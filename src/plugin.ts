@@ -4,7 +4,7 @@ import type { ActionCommand as ActionCommand, CoordinationMessage as Coordinatio
 import type { SyncedOptions, SyncedStoreOptions } from './types'
 
 import { merge, toError } from '@moeru/std'
-import { noop } from 'es-toolkit'
+import { isEqual, noop } from 'es-toolkit'
 import { Tab } from 'tab-election'
 import { onScopeDispose, toRaw } from 'vue'
 
@@ -351,6 +351,12 @@ export function createSyncedPiniaPlugin(
 
       return
     }
+
+    // A snapshot that matches the current state is not a change, and pinia
+    // notifies subscribers on every `$patch`. A late or repeated snapshot
+    // arrives this way: applying it reports a change that did not happen.
+    if (isEqual(resolvedOptions.serialize(registration.store.$state), serializedState))
+      return
 
     registration.applyingState += 1
     try {
