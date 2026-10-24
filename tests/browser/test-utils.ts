@@ -49,12 +49,14 @@ export async function openFramePeer(host: Page, name: string, url: string, error
   return { errors, surface: frame }
 }
 
-export async function openPagePeer(context: BrowserContext, leadership?: LeadershipMode): Promise<Peer<Page>> {
+export async function openPagePeer(context: BrowserContext, leadership?: LeadershipMode, roles: string[] = []): Promise<Peer<Page>> {
   const page = await context.newPage()
   const errors = trackErrors(page)
   const url = new URL('/?embed=false', 'http://localhost')
   if (leadership)
     url.searchParams.set('leadership', leadership)
+  if (roles.length > 0)
+    url.searchParams.set('roles', roles.join(','))
   await page.goto(`${url.pathname}${url.search}`)
   await expect(page.locator('.leadership-role')).toBeVisible()
   return { errors, surface: page }

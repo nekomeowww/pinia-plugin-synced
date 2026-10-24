@@ -7,7 +7,7 @@ import MessagesPanel from './components/messages-panel.vue'
 import GettingStarted from './docs/getting-started.md'
 import Introduction from './docs/introduction.md'
 import Ending from './docs/ending.md'
-import { isLeader, leaderId, participantCount, participantId } from './modules/synced'
+import { isLeader, leaderId, narratorCount, participantCount, participantId } from './modules/synced'
 
 const isDark = useDark({ disableTransition: false })
 const toggleDark = useToggle(isDark)
@@ -95,7 +95,8 @@ function openPeerWindow() {
           Leader
           <code :class="['leader-id font-mono text-primary']">{{ leaderId?.slice(0, 8) ?? 'electing' }}</code>,
           in total <span :class="['participant-count text-primary']">{{ participantCount }}</span>
-          {{ participantCount === 1 ? 'participant (tab/iframe/window)' : 'participants (tabs/iframes/windows)' }}.
+          {{ participantCount === 1 ? 'participant (tab/iframe/window)' : 'participants (tabs/iframes/windows)' }},
+          <span :class="['narrator-count text-primary']">{{ narratorCount }}</span> with the narrator role.
         </p>
       </section>
 
