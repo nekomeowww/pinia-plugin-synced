@@ -1,12 +1,12 @@
 import type { Pinia, PiniaPlugin, StateTree, StoreGeneric } from 'pinia'
 
-import type { ActionCommand as ActionCommand, CoordinationMessage as CoordinationMessage, DomainState as DomainState, OperationRecord as OperationRecord, StateCommand as StateCommand } from './protocol'
-import type { SyncedOptions, SyncedStoreOptions } from './types'
+import type { ActionCommand as ActionCommand, CoordinationMessage as CoordinationMessage, DomainState as DomainState, OperationRecord as OperationRecord, RoutedOutcome, StateCommand as StateCommand } from './protocol'
+import type { SyncedActionOptions, SyncedOptions, SyncedStoreOptions } from './types'
 
 import { merge, toError } from '@moeru/std'
 import { isEqual, noop } from 'es-toolkit'
 import { Tab } from 'tab-election'
-import { onScopeDispose, toRaw } from 'vue'
+import { nextTick, onScopeDispose, toRaw } from 'vue'
 
 import { leadershipModes } from './types'
 
@@ -30,7 +30,28 @@ interface PendingCommit {
   resolve: () => void
 }
 
+/** An action that this leader routed to another participant and still waits for. */
+interface PendingRoute {
+  reject: (error: Error) => void
+  resolve: (outcome: RoutedOutcome) => void
+  targetId: string
+  timeout: ReturnType<typeof setTimeout>
+}
+
+type ResolvedActionOptions = Required<SyncedActionOptions>
+
+interface ResolvedStoreOptions {
+  actions: Map<string, ResolvedActionOptions>
+  state: boolean
+}
+
 type ResolvedSyncedPiniaPluginOptions = Required<SyncedOptions>
+
+/** An action that this participant runs, or ran, for a leader. Kept so a re-routed request replays its outcome. */
+interface RoutedExecution {
+  expiresAt?: number
+  outcome: Promise<RoutedOutcome>
+}
 
 type StoreAction = (...args: unknown[]) => unknown
 
@@ -39,7 +60,9 @@ interface StoreRegistration {
   active: boolean
   appliedRevision?: number
   applyingState: number
-  options: Required<SyncedStoreOptions>
+  /** State proposals of this store that the leader has not acknowledged yet. */
+  localProposals: number
+  options: ResolvedStoreOptions
   originalActions: Map<string, StoreAction>
   restoreHotUpdate?: () => void
   stopSubscription?: () => void
@@ -135,16 +158,30 @@ const defaultOptions: ResolvedSyncedPiniaPluginOptions = {
   serialize: serializeState,
 }
 
+/** One live synchronization participant and the roles that it holds. */
+export interface SyncedParticipant {
+  id: string
+  roles: string[]
+}
+
 /** Coordination information observed by one synchronization runtime. */
 export interface SyncedPiniaCoordination {
   /** Current leader's tab-election participant ID, or undefined while electing. */
   leaderId: string | undefined
   /** Number of live synchronization participants, including the leader. */
   participantCount: number
+  /** Live synchronization participants, including this one, sorted by ID. */
+  participants: SyncedParticipant[]
 }
 
 /** Owns one Pinia plugin and the tab-election lifecycle for one synchronization domain. */
 export interface SyncedPiniaRuntime {
+  /**
+   * Adds a role to this participant, for example while a component that can run an action is mounted.
+   * Actions that require the role can then run here. Call the returned function to release this claim.
+   * The participant holds the role until every claim of it is released.
+   */
+  addRole: (role: string) => () => void
   /**
    * Stops new routes, rejects locally pending RPC callers, and releases transport ownership.
    * An action already executing in another tab cannot be canceled generically.
@@ -154,6 +191,10 @@ export interface SyncedPiniaRuntime {
   getLeaderId: () => string | undefined
   /** Returns the number of recently observed synchronization participants. */
   getParticipantCount: () => number
+  /** Returns the recently observed synchronization participants and their roles. */
+  getParticipants: () => SyncedParticipant[]
+  /** Returns the roles that this participant holds, sorted. */
+  getRoles: () => string[]
   /** Reports whether this web context currently owns the synchronization domain. */
   isLeader: () => boolean
   /** Subscribes to leader identity and participant-presence changes. */
@@ -196,8 +237,13 @@ export function createSyncedPiniaPlugin(
   const pendingStoreStates = new Map<string, unknown>()
   const coordinationListeners = new Set<(coordination: SyncedPiniaCoordination) => void>()
   const participantLastSeen = new Map([[tab.id, Date.now()]])
+  const participantRoles = new Map<string, string[]>()
+  const roleClaims = new Map<string, number>()
   const leadershipListeners = new Set<(isLeader: boolean) => void>()
   const pendingCalls = new Set<PendingCall>()
+  const pendingRoutes = new Map<string, PendingRoute>()
+  const routedExecutions = new Map<string, RoutedExecution>()
+  const unsettledCommits = new Set<Promise<void>>()
   let disposed = false
   let hasReceivedCommittedState = false
   let leaderId: string | undefined
@@ -205,10 +251,199 @@ export function createSyncedPiniaPlugin(
   let pendingCommit: PendingCommit | undefined
   let stopWaitingForCommittedState = noop
 
+  function localRoles() {
+    return [...roleClaims.keys()].sort()
+  }
+
+  function rolesOf(participantId: string) {
+    return participantId === tab.id ? localRoles() : participantRoles.get(participantId) ?? []
+  }
+
+  function listParticipants(): SyncedParticipant[] {
+    return [...participantLastSeen.keys()]
+      .sort()
+      .map(id => ({ id, roles: rolesOf(id) }))
+  }
+
+  function coordinationSnapshot(): SyncedPiniaCoordination {
+    return { leaderId, participantCount: participantLastSeen.size, participants: listParticipants() }
+  }
+
   function notifyCoordinationChange() {
-    const coordination = { leaderId, participantCount: participantLastSeen.size }
+    const coordination = coordinationSnapshot()
     for (const listener of coordinationListeners)
       listener(coordination)
+  }
+
+  /** Forgets a participant and fails the actions that this leader routed to it. */
+  function forgetParticipant(participantId: string) {
+    const removed = participantLastSeen.delete(participantId)
+    participantRoles.delete(participantId)
+    if (leaderId === participantId)
+      leaderId = undefined
+
+    for (const [operationId, route] of pendingRoutes) {
+      if (route.targetId === participantId) {
+        settleRoute(operationId, () => route.reject(new Error(`Participant "${participantId}" left before its routed action settled.`)))
+      }
+    }
+
+    return removed
+  }
+
+  function settleRoute(operationId: string, callback: () => void) {
+    const route = pendingRoutes.get(operationId)
+    if (!route)
+      return
+
+    pendingRoutes.delete(operationId)
+    clearTimeout(route.timeout)
+    callback()
+  }
+
+  /**
+   * Chooses the participant that runs an action.
+   * The leader runs it when it holds the roles. Otherwise the caller runs it, and then the first other holder by ID.
+   */
+  function selectExecutor(actionOptions: ResolvedActionOptions, callerId: string) {
+    if (actionOptions.roles.length === 0)
+      return tab.id
+
+    const holds = (participantId: string) => {
+      const roles = rolesOf(participantId)
+      return actionOptions.roles.every(role => roles.includes(role))
+    }
+
+    if (holds(tab.id))
+      return tab.id
+    if (participantLastSeen.has(callerId) && holds(callerId))
+      return callerId
+
+    const holder = [...participantLastSeen.keys()].sort().find(holds)
+    if (holder)
+      return holder
+    if (actionOptions.fallback === 'leader')
+      return tab.id
+
+    throw new Error(`No live participant holds the roles ${actionOptions.roles.map(role => `"${role}"`).join(', ')}.`)
+  }
+
+  /** Sends an action to the participant that holds its roles, and waits for its outcome. */
+  function routeAction(targetId: string, command: ActionCommand) {
+    return new Promise<RoutedOutcome>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        settleRoute(command.operationId, () => reject(new Error(`Participant "${targetId}" did not settle the routed action in time.`)))
+      }, resolvedOptions.callTimeout)
+
+      pendingRoutes.set(command.operationId, { reject, resolve, targetId, timeout })
+      tab.send({ command, leaderId: tab.id, type: 'action-request' } satisfies CoordinationMessage, targetId)
+    })
+  }
+
+  /**
+   * Runs an action that a leader routed to this participant, then reports its outcome to that leader.
+   *
+   * Triggering workflow:
+   *
+   * {@link routeAction}
+   *   -> `action-request`
+   *     -> {@link handleCoordinationMessage}
+   *       -> {@link runRoutedAction}
+   *
+   * Upstream:
+   * - {@link handleCoordinationMessage}
+   *
+   * Downstream:
+   * - {@link flushLocalProposals}
+   */
+  function runRoutedAction(command: ActionCommand, requesterId: string) {
+    pruneRoutedExecutions()
+
+    let execution = routedExecutions.get(command.operationId)
+    if (!execution) {
+      const created: RoutedExecution = {
+        outcome: Promise.resolve()
+          .then(() => {
+            const registration = registrations.get(command.storeId)
+            const action = registration?.originalActions.get(command.actionName)
+            if (!registration?.active || !action)
+              throw new Error(`Store "${command.storeId}" does not expose synced action "${command.actionName}" in participant "${tab.id}".`)
+
+            return action.apply(registration.store, command.args)
+          })
+          .then(
+            result => ({ result: structuredClone(result), status: 'fulfilled' }) as const,
+            (error: unknown) => {
+              const operationError = toError(error)
+              return { error: { message: operationError.message, name: operationError.name }, status: 'rejected' } as const
+            },
+          )
+          // The leader commits the result. State proposals from the action must reach it first.
+          .then(async (outcome) => {
+            await flushLocalProposals()
+            created.expiresAt = Date.now() + resolvedOptions.callTimeout
+            return outcome
+          }),
+      }
+      execution = created
+      routedExecutions.set(command.operationId, execution)
+    }
+
+    void execution.outcome.then((outcome) => {
+      if (!disposed)
+        tab.send({ operationId: command.operationId, outcome, type: 'action-result' } satisfies CoordinationMessage, requesterId)
+    })
+  }
+
+  function pruneRoutedExecutions() {
+    const now = Date.now()
+    for (const [operationId, execution] of routedExecutions) {
+      if (execution.expiresAt !== undefined && execution.expiresAt < now)
+        routedExecutions.delete(operationId)
+    }
+  }
+
+  /** Waits until this participant's queued state proposals reach the leader. */
+  async function flushLocalProposals() {
+    // Mutation subscriptions run in Vue's pre-flush queue. Let the last mutation queue its commit first.
+    await nextTick()
+    while (unsettledCommits.size > 0) {
+      // A failed proposal is reported by the mutation subscription.
+      await Promise.allSettled([...unsettledCommits])
+    }
+  }
+
+  function announceRoles() {
+    tab.send({ participantId: tab.id, roles: localRoles(), type: 'participant-roles' } satisfies CoordinationMessage)
+    notifyCoordinationChange()
+  }
+
+  function addRole(role: string) {
+    if (typeof role !== 'string' || role.length === 0)
+      throw new TypeError('A role must be a non-empty string.')
+    if (disposed)
+      return noop
+
+    const claims = roleClaims.get(role) ?? 0
+    roleClaims.set(role, claims + 1)
+    if (claims === 0)
+      announceRoles()
+
+    let released = false
+    return () => {
+      if (released || disposed)
+        return
+
+      released = true
+      const remaining = (roleClaims.get(role) ?? 1) - 1
+      if (remaining > 0) {
+        roleClaims.set(role, remaining)
+        return
+      }
+
+      roleClaims.delete(role)
+      announceRoles()
+    }
   }
 
   function publishCommit(storeStates: ReadonlyMap<string, unknown>, operations: readonly OperationRecord[]) {
@@ -288,12 +523,36 @@ export function createSyncedPiniaPlugin(
         publishCommit(storeStates, operations)
       }
       else {
-        await Promise.all([...storeStates].map(([storeId, state]) => invokeLeader('replaceState', { state, storeId })))
+        await Promise.all([...storeStates].map(([storeId, state]) => proposeState(storeId, state)))
       }
       commit.resolve()
     }
     catch (error) {
       commit.reject(error)
+    }
+  }
+
+  /**
+   * Sends a full-state proposal of one store to the leader.
+   *
+   * While a proposal is unsettled, {@link applyDomainState} keeps the local state of that store.
+   * A snapshot that arrives meanwhile can predate the local mutation, for example the echo of an earlier proposal.
+   * Applying it would undo the mutation. Worse, an action that still runs here would write to replaced objects.
+   */
+  async function proposeState(storeId: string, state: unknown) {
+    const registration = registrations.get(storeId)
+    if (registration)
+      registration.localProposals += 1
+
+    try {
+      await invokeLeader('replaceState', { state, storeId })
+    }
+    finally {
+      if (registration) {
+        registration.localProposals -= 1
+        if (registration.localProposals === 0 && registration.active && !tab.isLeader)
+          applyDomainState(tab.getState())
+      }
     }
   }
 
@@ -308,6 +567,11 @@ export function createSyncedPiniaPlugin(
       resolve = resolvePromise
     })
     pendingCommit = { promise, reject, resolve }
+    unsettledCommits.add(promise)
+    promise.then(
+      () => unsettledCommits.delete(promise),
+      () => unsettledCommits.delete(promise),
+    )
     commitChannel.port2.postMessage(undefined)
     return promise
   }
@@ -388,6 +652,10 @@ export function createSyncedPiniaPlugin(
       if (!(storeId in domainState.stores))
         continue
 
+      // Keep unsent and unacknowledged local mutations. See proposeState.
+      if (!tab.isLeader && (registration.localProposals > 0 || pendingDirtyStoreIds.has(storeId)))
+        continue
+
       const storeRevision = domainState.storeRevisions[storeId] ?? domainState.revision
       if (registration.appliedRevision === storeRevision)
         continue
@@ -428,12 +696,25 @@ export function createSyncedPiniaPlugin(
 
     const registration = registrations.get(command.storeId)
     const action = registration?.originalActions.get(command.actionName)
-    if (!registration?.active || !action) {
+    const actionOptions = registration?.options.actions.get(command.actionName)
+    if (!registration?.active || !action || !actionOptions) {
       throw new Error(`Store "${command.storeId}" does not expose synced action "${command.actionName}" in the leader.`)
     }
 
+    const run = async () => {
+      const executorId = selectExecutor(actionOptions, command.callerId)
+      if (executorId === tab.id)
+        return action.apply(registration.store, command.args)
+
+      const outcome = await routeAction(executorId, command)
+      if (outcome.status === 'rejected')
+        throw toError(outcome.error)
+
+      return outcome.result
+    }
+
     const execution = Promise.resolve()
-      .then(() => action.apply(registration.store, command.args))
+      .then(run)
       .then(
         async (result) => {
           const clonedResult = structuredClone(result)
@@ -529,28 +810,41 @@ export function createSyncedPiniaPlugin(
       return
     }
 
+    if (message.type === 'action-request' && message.command && typeof message.leaderId === 'string') {
+      runRoutedAction(message.command, message.leaderId)
+      return
+    }
+
+    if (message.type === 'action-result' && typeof message.operationId === 'string' && message.outcome) {
+      const outcome = message.outcome
+      const route = pendingRoutes.get(message.operationId)
+      if (route)
+        settleRoute(message.operationId, () => route.resolve(outcome))
+      return
+    }
+
     if (!('participantId' in message) || typeof message.participantId !== 'string')
       return
 
     if (message.type === 'participant-leave') {
-      const changed = participantLastSeen.delete(message.participantId)
-      if (leaderId === message.participantId)
-        leaderId = undefined
-      if (changed)
+      if (forgetParticipant(message.participantId))
         notifyCoordinationChange()
       return
     }
 
-    if (message.type !== 'participant-heartbeat' && message.type !== 'participant-hello' && message.type !== 'participant-present')
+    if (message.type !== 'participant-heartbeat' && message.type !== 'participant-hello' && message.type !== 'participant-present' && message.type !== 'participant-roles')
       return
 
     const countBefore = participantLastSeen.size
     participantLastSeen.set(message.participantId, Date.now())
-    if (countBefore !== participantLastSeen.size)
+    const roles = Array.isArray(message.roles) ? message.roles.filter((role): role is string => typeof role === 'string').sort() : []
+    const rolesChanged = !isEqual(participantRoles.get(message.participantId) ?? [], roles)
+    participantRoles.set(message.participantId, roles)
+    if (countBefore !== participantLastSeen.size || rolesChanged)
       notifyCoordinationChange()
 
     if (message.type === 'participant-hello') {
-      tab.send({ participantId: tab.id, type: 'participant-present' } satisfies CoordinationMessage, message.participantId)
+      tab.send({ participantId: tab.id, roles: localRoles(), type: 'participant-present' } satisfies CoordinationMessage, message.participantId)
       if (tab.isLeader)
         tab.send({ leaderId: tab.id, type: 'leader-present' } satisfies CoordinationMessage, message.participantId)
     }
@@ -685,23 +979,22 @@ export function createSyncedPiniaPlugin(
   if (resolvedOptions.leadership !== 'follower-only')
     void participateInElection()
 
-  tab.send({ participantId: tab.id, type: 'participant-hello' } satisfies CoordinationMessage)
+  tab.send({ participantId: tab.id, roles: localRoles(), type: 'participant-hello' } satisfies CoordinationMessage)
   const heartbeatTimer = setInterval(() => {
     const now = Date.now()
     let changed = false
     participantLastSeen.set(tab.id, now)
     for (const [participantId, lastSeen] of participantLastSeen) {
       if (participantId !== tab.id && now - lastSeen > resolvedOptions.participantTimeout) {
-        participantLastSeen.delete(participantId)
-        if (leaderId === participantId)
-          leaderId = undefined
+        forgetParticipant(participantId)
         changed = true
       }
     }
     if (changed)
       notifyCoordinationChange()
 
-    tab.send({ participantId: tab.id, type: 'participant-heartbeat' } satisfies CoordinationMessage)
+    pruneRoutedExecutions()
+    tab.send({ participantId: tab.id, roles: localRoles(), type: 'participant-heartbeat' } satisfies CoordinationMessage)
   }, resolvedOptions.participantHeartbeatInterval)
 
   function invokeLeader<Result>(method: keyof LeaderApi, command: ActionCommand | StateCommand) {
@@ -726,7 +1019,7 @@ export function createSyncedPiniaPlugin(
   }
 
   function installActionWrappers(registration: StoreRegistration) {
-    for (const actionName of registration.options.actions) {
+    for (const actionName of registration.options.actions.keys()) {
       const value: unknown = registration.store[actionName]
       if (typeof value !== 'function')
         throw new TypeError(`Store "${registration.store.$id}" does not expose action "${actionName}".`)
@@ -739,6 +1032,7 @@ export function createSyncedPiniaPlugin(
         return invokeLeader('invokeAction', {
           actionName,
           args,
+          callerId: tab.id,
           operationId: crypto.randomUUID(),
           storeId: registration.store.$id,
         })
@@ -769,11 +1063,12 @@ export function createSyncedPiniaPlugin(
     }
   }
 
-  function registerStore(store: StoreGeneric, storeOptions: Required<SyncedStoreOptions>) {
+  function registerStore(store: StoreGeneric, storeOptions: ResolvedStoreOptions) {
     const registration: StoreRegistration = {
       actionWrappers: new Map(),
       active: true,
       applyingState: 0,
+      localProposals: 0,
       options: storeOptions,
       originalActions: new Map(),
       store,
@@ -874,12 +1169,13 @@ export function createSyncedPiniaPlugin(
     const configured = storeDefinition.synced === true ? {} : storeDefinition.synced
 
     registerStore(store, {
-      actions: configured.actions ?? [],
+      actions: resolveActionOptions(store.$id, configured.actions ?? []),
       state: configured.state ?? true,
     })
   }
 
   return {
+    addRole,
     dispose() {
       if (disposed)
         return
@@ -900,6 +1196,9 @@ export function createSyncedPiniaPlugin(
       coordinationListeners.clear()
       leadershipListeners.clear()
       inFlightActions.clear()
+      roleClaims.clear()
+      routedExecutions.clear()
+      unsettledCommits.clear()
       pendingDirtyStoreIds.clear()
       pendingOperations.clear()
       pendingStoreStates.clear()
@@ -914,18 +1213,23 @@ export function createSyncedPiniaPlugin(
       for (const pending of pendingCalls)
         pending.reject(disposalError)
 
+      for (const [operationId, route] of [...pendingRoutes])
+        settleRoute(operationId, () => route.reject(disposalError))
+
       pendingCalls.clear()
       tab.close()
     },
     getLeaderId: () => leaderId,
     getParticipantCount: () => participantLastSeen.size,
+    getParticipants: listParticipants,
+    getRoles: localRoles,
     isLeader: () => tab.isLeader,
     onCoordinationChange(listener) {
       if (disposed)
         return noop
 
       coordinationListeners.add(listener)
-      listener({ leaderId, participantCount: participantLastSeen.size })
+      listener(coordinationSnapshot())
 
       return () => coordinationListeners.delete(listener)
     },
@@ -970,4 +1274,24 @@ function normalizeDomainState(state: unknown): DomainState {
     storeRevisions,
     stores,
   }
+}
+
+function resolveActionOptions(storeId: string, actions: NonNullable<SyncedStoreOptions['actions']>) {
+  const entries: [string, SyncedActionOptions | undefined][] = Array.isArray(actions)
+    ? actions.map(actionName => [actionName, undefined])
+    : Object.entries(actions)
+  const resolved = new Map<string, ResolvedActionOptions>()
+
+  for (const [actionName, options] of entries) {
+    const roles = options?.roles ?? []
+    const fallback = options?.fallback ?? 'leader'
+    if (!roles.every(role => typeof role === 'string' && role.length > 0))
+      throw new TypeError(`Synced action "${actionName}" of store "${storeId}" must list non-empty role strings.`)
+    if (fallback !== 'leader' && fallback !== 'reject')
+      throw new TypeError(`Synced action "${actionName}" of store "${storeId}" must use fallback "leader" or "reject".`)
+
+    resolved.set(actionName, { fallback, roles: [...roles] })
+  }
+
+  return resolved
 }

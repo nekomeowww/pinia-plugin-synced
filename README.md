@@ -65,6 +65,44 @@ Calling `send()` in any context returns a Promise and executes the action in the
 >
 > `leader-only` takeover is a best-effort failover, not a transactional handoff: it does not cancel actions or external side effects already executing in the previous leader. If the current committed state cannot be received within `callTimeout`, the runtime reports the error through `onError`, remains a follower, and does not retry the forced takeover.
 
+### Route actions by role
+
+Some actions can only run in a context that has a resource, for example a page that plays audio or owns a canvas. Give such a context a role, and route the action to the role:
+
+```ts
+export const useChatStore = defineStore('chat', () => {
+  // ...
+}, {
+  synced: {
+    actions: {
+      clear: {}, // runs in the leader
+      send: { roles: ['speech-player'] }, // runs in a context that holds the role
+    },
+  },
+})
+```
+
+```ts
+// In the component that owns the resource
+onMounted(() => {
+  const release = synced.addRole('speech-player')
+  onUnmounted(release)
+})
+```
+
+- A context can hold several roles, and several contexts can hold the same role. Roles change at runtime.
+- The leader routes each call. When the action lists roles, a live context that holds every listed role runs it.
+  - The leader runs it when the leader holds the roles.
+  - Otherwise, the caller runs it when the caller holds the roles.
+  - Otherwise, the first other holder by participant ID runs it.
+- When no context holds the roles, `fallback: 'leader'` (default) runs the action in the leader. `fallback: 'reject'` rejects the call.
+- The leader still commits state. A routed action proposes its mutations to the leader, and its result is recorded after them. While a store has unacknowledged proposals, the executing context keeps its local state of that store.
+- `addRole` returns a release function. The context holds a role until every claim of it is released.
+
+> [!NOTE]
+>
+> When the context that runs a routed action leaves, the call rejects. The action is not retried in another context.
+
 ### Resource cleanup
 
 Dispose the runtime when its owning page or window ends:
@@ -94,6 +132,9 @@ synced.participantId // unique ID of this runtime
 synced.isLeader() // true if this runtime is the elected leader
 synced.getLeaderId() // unique ID of the elected leader runtime
 synced.getParticipantCount() // number of runtimes in the synchronization domain
+synced.getParticipants() // live runtimes and their roles, sorted by ID
+synced.addRole('speech-player') // adds a role, returns a release function
+synced.getRoles() // roles of this runtime
 ```
 
 ## Use with `pinia-plugin-persistedstate`

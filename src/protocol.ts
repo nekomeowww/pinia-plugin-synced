@@ -4,17 +4,22 @@ import type { ErrorLike } from '@moeru/std'
 export interface ActionCommand {
   actionName: string
   args: unknown[]
+  /** The participant that called the action. The leader prefers it when it holds the required roles. */
+  callerId: string
   operationId: string
   storeId: string
 }
 
-/** Presence messages exchanged directly between synchronization participants. */
+/** Presence and routing messages exchanged directly between synchronization participants. */
 export type CoordinationMessage
-  = | { leaderId: string, type: 'leader-present' }
-    | { participantId: string, type: 'participant-heartbeat' }
-    | { participantId: string, type: 'participant-hello' }
+  = | { command: ActionCommand, leaderId: string, type: 'action-request' }
+    | { leaderId: string, type: 'leader-present' }
+    | { operationId: string, outcome: RoutedOutcome, type: 'action-result' }
+    | { participantId: string, roles: string[], type: 'participant-heartbeat' }
+    | { participantId: string, roles: string[], type: 'participant-hello' }
+    | { participantId: string, roles: string[], type: 'participant-present' }
+    | { participantId: string, roles: string[], type: 'participant-roles' }
     | { participantId: string, type: 'participant-leave' }
-    | { participantId: string, type: 'participant-present' }
 
 /** The leader-owned state replicated by tab-election to every participating tab. */
 export interface DomainState {
@@ -44,6 +49,11 @@ export type OperationRecord
     outcome: 'fulfilled'
     result: unknown
   }
+
+/** The outcome of an action that the leader routed to another participant. */
+export type RoutedOutcome
+  = | { error: OperationError, status: 'rejected' }
+    | { result: unknown, status: 'fulfilled' }
 
 /** Proposes a full state snapshot to the elected leader. */
 export interface StateCommand {

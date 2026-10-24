@@ -4,6 +4,22 @@ export const leadershipModes = ['follower-preferred', 'follower-only', 'leader-o
 
 export type LeadershipMode = typeof leadershipModes[number]
 
+/** Where one synced action executes. */
+export interface SyncedActionOptions {
+  /**
+   * What happens when no live participant holds the roles.
+   * `leader` runs the action in the leader. `reject` rejects the call. @default leader
+   */
+  fallback?: 'leader' | 'reject'
+  /**
+   * Runs the action in a live participant that holds every listed role.
+   * The leader runs it when it holds the roles. Otherwise the caller runs it when it holds them.
+   * Otherwise another participant that holds them runs it.
+   * An empty list runs the action in the leader. @default []
+   */
+  roles?: readonly string[]
+}
+
 export interface SyncedOptions {
   /** Timeout for an action or state RPC to the elected leader, in milliseconds. @default 30000 */
   callTimeout?: number
@@ -26,8 +42,12 @@ export interface SyncedOptions {
 }
 
 export interface SyncedStoreOptions<ActionName extends string = string> {
-  /** Async actions routed to and executed only by the elected leader. @default [] */
-  actions?: readonly ActionName[]
+  /**
+   * Async actions that the elected leader routes and executes.
+   * A list runs each action in the leader. A record can route an action to participants by role.
+   * @default []
+   */
+  actions?: readonly ActionName[] | { readonly [Name in ActionName]?: SyncedActionOptions }
   /** Synchronize direct mutations as authoritative full-state proposals. @default true */
   state?: boolean
 }

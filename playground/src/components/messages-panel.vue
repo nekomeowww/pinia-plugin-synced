@@ -8,12 +8,17 @@ import { usePreferredReducedMotion } from '@vueuse/core'
 import { storeToRefs } from 'pinia'
 import { computed, nextTick, onBeforeUnmount, onMounted, shallowReactive, shallowRef, useTemplateRef, watch } from 'vue'
 
-import { participantId } from '../modules/synced'
-import { appendMessageExecutions, useMessagesStore } from '../stores/messages'
+import { narratorRole, participantId, roles, setNarrator } from '../modules/synced'
+import { appendMessageExecutions, narrateMessageExecutions, useMessagesStore } from '../stores/messages'
 
 const messagesStore = useMessagesStore()
 const { messages } = storeToRefs(messagesStore)
 const draft = shallowRef('')
+const narrateError = shallowRef<string>()
+const isNarrator = computed({
+  get: () => roles.value.includes(narratorRole),
+  set: setNarrator,
+})
 const shortParticipantId = computed(() => participantId.slice(0, 8))
 const reducedMotion = usePreferredReducedMotion()
 const messageList = useTemplateRef<HTMLOListElement>('message-list')
@@ -111,6 +116,26 @@ async function appendMessage() {
   draft.value = ''
 }
 
+async function narrateMessage() {
+  const text = draft.value.trim()
+  if (!text)
+    return
+
+  narrateError.value = undefined
+  try {
+    await messagesStore.narrateMessage({
+      createdAt: Date.now(),
+      id: crypto.randomUUID(),
+      sourceId: shortParticipantId.value,
+      text,
+    })
+    draft.value = ''
+  }
+  catch (error) {
+    narrateError.value = error instanceof Error ? error.message : String(error)
+  }
+}
+
 async function clearMessages() {
   await messagesStore.clearMessages()
 }
@@ -183,8 +208,33 @@ function patchMessage() {
       >
         Send by state update
       </button>
+      <button
+        type="button"
+        :class="[
+          'narrate-message',
+          'rounded-lg bg-neutral-200 px-4 py-2 dark:bg-neutral-800',
+          'hover:bg-primary-200 dark:hover:bg-primary-800',
+          'transition-all duration-150 ease-in-out',
+          'outline-none'
+        ]"
+        @click="narrateMessage"
+      >
+        Send to a narrator
+      </button>
     </div>
   </form>
+
+  <div :class="['mt-4 flex flex-col gap-1 text-sm text-neutral-600 dark:text-neutral-300']">
+    <label :class="['flex items-center gap-2']">
+      <input v-model="isNarrator" type="checkbox" :class="['narrator-role']">
+      This context holds the <code>{{ narratorRole }}</code> role. Narrate actions run only in a narrator.
+    </label>
+    <span>
+      Roles: <code :class="['participant-roles font-mono']">{{ roles.join(', ') || 'none' }}</code>.
+      Local narrate executions: <code :class="['narrate-message-executions font-mono']">{{ narrateMessageExecutions }}</code>
+    </span>
+    <span v-if="narrateError" :class="['narrate-error text-red-600 dark:text-red-400']">{{ narrateError }}</span>
+  </div>
 
   <div
     :class="[
