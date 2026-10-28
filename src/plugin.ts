@@ -215,6 +215,9 @@ export interface SyncedPiniaRuntime {
  * leader applies and republishes. Every tab that can become leader must create
  * each opted-in store before callers invoke its registered actions.
  */
+/** How the wait of a leader-only participant before its takeover ended. */
+type CommittedStateWait = 'leader-gone' | 'state' | 'stopped'
+
 export function createSyncedPiniaPlugin(
   options: SyncedOptions = {},
 ): SyncedPiniaRuntime {
@@ -909,28 +912,54 @@ export function createSyncedPiniaPlugin(
     resolvedOptions.onError(error)
   }
 
+  /**
+   * Waits until a leader-only participant can take over: the current leader sent its committed state, or the leader
+   * lock became free because the leader is gone.
+   *
+   * A leader that unloads keeps its lock for a moment. A tab that starts in that moment sees a leader, but the leader
+   * never sends its state. Without the lock check, the tab waits the full `callTimeout` before it leads. All windows of
+   * an app reload at the same time when the app updates its pages in place, so this case is common there.
+   *
+   * Resolves `'state'` or `'leader-gone'`, and `'stopped'` when the runtime is disposed.
+   */
   function waitForCommittedState() {
     if (hasReceivedCommittedState)
-      return Promise.resolve(true)
+      return Promise.resolve<CommittedStateWait>('state')
 
-    return new Promise<boolean>((resolve, reject) => {
+    return new Promise<CommittedStateWait>((resolve, reject) => {
       let handleStateReceived: () => void
       let timeout: ReturnType<typeof setTimeout>
+      const lockWait = new AbortController()
+      let settled = false
 
       const settle = (callback: () => void) => {
+        if (settled)
+          return
+        settled = true
         clearTimeout(timeout)
+        lockWait.abort()
         tab.removeEventListener('state', handleStateReceived)
         stopWaitingForCommittedState = noop
         callback()
       }
 
-      handleStateReceived = () => settle(() => resolve(true))
+      handleStateReceived = () => settle(() => resolve('state'))
       timeout = setTimeout(() => {
         settle(() => reject(new Error('leader-only takeover timed out before receiving committed state.')))
       }, resolvedOptions.callTimeout)
 
-      stopWaitingForCommittedState = () => settle(() => resolve(false))
+      stopWaitingForCommittedState = () => settle(() => resolve('stopped'))
       tab.addEventListener('state', handleStateReceived)
+
+      // NOTICE:
+      // tab-election names its leader lock `tab-${name}` and exposes no event for a free lock.
+      // A request for the same lock is granted only after the leader released it, so the grant means the leader is gone.
+      // The callback returns at once, so the lock is free again for the takeover below.
+      // Source: tab-election 4.6.2, dist/tab.js, `hasLeader` and `waitForLeadership`.
+      // Remove it when tab-election reports a lost leader by itself.
+      navigator.locks
+        .request(`tab-${tab.name}`, { signal: lockWait.signal }, () => settle(() => resolve('leader-gone')))
+        .catch(noop)
 
       if (hasReceivedCommittedState)
         handleStateReceived()
@@ -946,7 +975,7 @@ export function createSyncedPiniaPlugin(
 
       if (hasLeader && !tab.isLeader) {
         try {
-          if (!await waitForCommittedState())
+          if (await waitForCommittedState() === 'stopped')
             return
           steal = true
         }

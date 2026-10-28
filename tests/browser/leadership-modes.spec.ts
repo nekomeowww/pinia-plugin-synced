@@ -1,3 +1,5 @@
+import type { BrowserContext } from '@playwright/test'
+
 import { expect, test } from '@playwright/test'
 
 import {
@@ -68,4 +70,57 @@ test('leader-only participants take over once in joining order', async ({ contex
   await expectCoordination([first], firstId, 1)
 
   expect(first.errors).toEqual([])
+})
+
+/**
+ * Holds the leader lock from a page that runs no sync runtime, like a leader page that is still unloading. It never
+ * sends committed state. Returns a function that releases the lock.
+ */
+async function holdStaleLeaderLock(context: BrowserContext) {
+  const page = await context.newPage()
+  await page.goto('/?embed=false&leadership=follower-only')
+  await expect(page.locator('.leadership-role')).toBeVisible()
+  await page.evaluate(() => new Promise<void>((resolve) => {
+    void navigator.locks.request('tab-pinia-plugin-synced:playground', { steal: true }, () => new Promise<void>((release) => {
+      ;(window as unknown as { releaseStaleLeaderLock: () => void }).releaseStaleLeaderLock = release
+      resolve()
+    }))
+  }))
+
+  return async () => {
+    await page.evaluate(() => (window as unknown as { releaseStaleLeaderLock: () => void }).releaseStaleLeaderLock())
+  }
+}
+
+test('a leader-only participant takes over as soon as a stale leader lock is released', async ({ context }) => {
+  const releaseStaleLeaderLock = await holdStaleLeaderLock(context)
+
+  const follower = await openPagePeer(context, 'follower-only')
+  const leaderOnly = await openPagePeer(context, 'leader-only')
+  await expect(leaderOnly.surface.locator('.leadership-role')).toHaveText('follower')
+
+  // An action that a follower starts while no participant leads must run once the leader-only participant leads.
+  await sendMessage(follower, 'during the gap')
+  await releaseStaleLeaderLock()
+
+  // The call timeout of the playground is 30 seconds. The takeover must not wait for it.
+  await expect(leaderOnly.surface.locator('.leadership-role')).toHaveText('leader', { timeout: 5_000 })
+  await expectMessages(follower, ['during the gap'])
+  await expectMessages(leaderOnly, ['during the gap'])
+
+  expect(follower.errors).toEqual([])
+  expect(leaderOnly.errors).toEqual([])
+})
+
+test('a leader-only participant leads again after every participant reloads at once', async ({ context }) => {
+  const leaderOnly = await openPagePeer(context, 'leader-only')
+  const follower = await openPagePeer(context, 'follower-only')
+  await expectCoordination([leaderOnly, follower], await participantId(leaderOnly), 2)
+
+  await Promise.all([leaderOnly.surface.reload(), follower.surface.reload()])
+  await sendMessage(follower, 'after reload')
+
+  await expect(leaderOnly.surface.locator('.leadership-role')).toHaveText('leader', { timeout: 5_000 })
+  await expectMessages(follower, ['after reload'])
+  await expectMessages(leaderOnly, ['after reload'])
 })
