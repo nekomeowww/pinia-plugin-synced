@@ -215,6 +215,11 @@ export interface SyncedPiniaRuntime {
  * leader applies and republishes. Every tab that can become leader must create
  * each opted-in store before callers invoke its registered actions.
  */
+function dbg(...args: unknown[]) {
+  const log = ((globalThis as unknown as { __dbg?: unknown[] }).__dbg ??= [])
+  log.push([Math.round(performance.now()), ...args].map(arg => JSON.stringify(arg)).join(' '))
+}
+
 export function createSyncedPiniaPlugin(
   options: SyncedOptions = {},
 ): SyncedPiniaRuntime {
@@ -544,7 +549,7 @@ export function createSyncedPiniaPlugin(
     if (registration)
       registration.localProposals += 1
 
-    console.log('DBG propose', JSON.stringify((state as { messages?: { text: string }[] })?.messages?.map(m => m.text.split(' ').length)), registration?.localProposals)
+    dbg('propose', (state as { messages?: { text: string }[] })?.messages?.map(m => m.text.split(' ').length), registration?.localProposals)
     try {
       await invokeLeader('replaceState', { state, storeId })
     }
@@ -661,7 +666,7 @@ export function createSyncedPiniaPlugin(
       if (registration.appliedRevision === storeRevision)
         continue
 
-      console.log('DBG apply', tab.isLeader, storeRevision, JSON.stringify((domainState.stores[storeId] as { messages?: { text: string }[] })?.messages?.map(m => m.text.split(' ').length)))
+      dbg('apply', tab.isLeader, storeRevision, (domainState.stores[storeId] as { messages?: { text: string }[] })?.messages?.map(m => m.text.split(' ').length), registration.localProposals, pendingDirtyStoreIds.has(storeId))
       applyStoreState(registration, domainState.stores[storeId])
       registration.appliedRevision = storeRevision
     }
@@ -746,7 +751,7 @@ export function createSyncedPiniaPlugin(
   }
 
   function replaceState(command: StateCommand) {
-    console.log('DBG replaceState', JSON.stringify((command.state as { messages?: { text: string }[] })?.messages?.map(m => m.text.split(' ').length)))
+    dbg('replaceState', (command.state as { messages?: { text: string }[] })?.messages?.map(m => m.text.split(' ').length))
     const registration = registrations.get(command.storeId)
     if (registration?.active)
       applyStoreState(registration, command.state)
@@ -1123,6 +1128,7 @@ export function createSyncedPiniaPlugin(
        * - {@link queueDirtyStore}
        */
       const handleStoreMutation: Parameters<typeof store.$subscribe>[0] = () => {
+        dbg('mutation', registration.applyingState, (store.$state as { messages?: { text: string }[] }).messages?.map(m => m.text.split(' ').length))
         if (!registration.active || registration.applyingState > 0)
           return
 

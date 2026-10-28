@@ -104,12 +104,6 @@ test('a follower that runs a streaming role action keeps every streamed mutation
   const { leader } = await waitForSingleLeader([first])
   const narrator = await openPagePeer(context, 'follower-only', ['narrator'])
   const peers = [leader, narrator]
-  for (const [name, peer] of [['L', leader], ['N', narrator]] as const) {
-    (peer.surface as import('@playwright/test').Page).on('console', (message) => {
-      if (message.text().startsWith('DBG'))
-        console.log(`${name} ${Date.now() % 100000} ${message.text()}`)
-    })
-  }
   await expectNarrators(peers, 1)
 
   const words = Array.from({ length: 40 }, (_value, index) => `word-${index}`)
@@ -117,8 +111,15 @@ test('a follower that runs a streaming role action keeps every streamed mutation
     await narrateMessage(leader, `${round} ${words.join(' ')}`)
 
   const expected = Array.from({ length: 3 }, (_value, round) => `${round} ${words.join(' ')}`)
-  for (const peer of peers) {
-    await expect(peer.surface.locator('.message-item > span:first-child')).toHaveText(expected)
+  try {
+    for (const peer of peers) {
+      await expect(peer.surface.locator('.message-item > span:first-child')).toHaveText(expected)
+    }
+  }
+  catch (error) {
+    for (const [name, peer] of [['L', leader], ['N', narrator]] as const)
+      console.log(`=== ${name}\n${(await peer.surface.evaluate(() => (globalThis as unknown as { __dbg?: string[] }).__dbg ?? [])).join('\n')}`)
+    throw error
   }
   await expect(narrator.surface.locator('.narrate-message-executions')).toHaveText('3')
 })
