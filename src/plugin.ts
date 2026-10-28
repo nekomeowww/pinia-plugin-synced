@@ -544,6 +544,7 @@ export function createSyncedPiniaPlugin(
     if (registration)
       registration.localProposals += 1
 
+    console.log('DBG propose', JSON.stringify((state as { messages?: { text: string }[] })?.messages?.map(m => m.text.split(' ').length)), registration?.localProposals)
     try {
       await invokeLeader('replaceState', { state, storeId })
     }
@@ -660,6 +661,7 @@ export function createSyncedPiniaPlugin(
       if (registration.appliedRevision === storeRevision)
         continue
 
+      console.log('DBG apply', tab.isLeader, storeRevision, JSON.stringify((domainState.stores[storeId] as { messages?: { text: string }[] })?.messages?.map(m => m.text.split(' ').length)))
       applyStoreState(registration, domainState.stores[storeId])
       registration.appliedRevision = storeRevision
     }
@@ -744,6 +746,7 @@ export function createSyncedPiniaPlugin(
   }
 
   function replaceState(command: StateCommand) {
+    console.log('DBG replaceState', JSON.stringify((command.state as { messages?: { text: string }[] })?.messages?.map(m => m.text.split(' ').length)))
     const registration = registrations.get(command.storeId)
     if (registration?.active)
       applyStoreState(registration, command.state)

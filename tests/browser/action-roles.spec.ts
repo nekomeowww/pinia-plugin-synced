@@ -104,6 +104,12 @@ test('a follower that runs a streaming role action keeps every streamed mutation
   const { leader } = await waitForSingleLeader([first])
   const narrator = await openPagePeer(context, 'follower-only', ['narrator'])
   const peers = [leader, narrator]
+  for (const [name, peer] of [['L', leader], ['N', narrator]] as const) {
+    (peer.surface as import('@playwright/test').Page).on('console', (message) => {
+      if (message.text().startsWith('DBG'))
+        console.log(`${name} ${Date.now() % 100000} ${message.text()}`)
+    })
+  }
   await expectNarrators(peers, 1)
 
   const words = Array.from({ length: 40 }, (_value, index) => `word-${index}`)
