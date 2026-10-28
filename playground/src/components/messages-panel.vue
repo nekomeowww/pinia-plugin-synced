@@ -113,7 +113,16 @@ async function appendMessage() {
     sourceId: shortParticipantId.value,
     text,
   })
-  draft.value = ''
+  clearDraft(text)
+}
+
+/**
+ * Clears the draft after a send, unless the user typed a new draft while the send ran. A send can take a while, for
+ * example a narration that streams word by word.
+ */
+function clearDraft(sentText: string) {
+  if (draft.value.trim() === sentText)
+    draft.value = ''
 }
 
 async function narrateMessage() {
@@ -129,7 +138,7 @@ async function narrateMessage() {
       sourceId: shortParticipantId.value,
       text,
     })
-    draft.value = ''
+    clearDraft(text)
   }
   catch (error) {
     narrateError.value = error instanceof Error ? error.message : String(error)
